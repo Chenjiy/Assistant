@@ -1,16 +1,15 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"github.com/cloudwego/hertz/pkg/app"
-	"github.com/cloudwego/hertz/pkg/app/server"
-	"io"
-	"net/http"
-	"os"
-	"strconv"
-	"strings"
+    "bytes"
+    "context"
+    "encoding/json"
+    "github.com/gin-gonic/gin"
+    "io"
+    "net/http"
+    "os"
+    "strconv"
+    "strings"
 )
 
 type DiagnoseInfo struct {
@@ -93,8 +92,8 @@ func buildExerciseResponse(title, desc string) GetExerciseResponse {
 	return GetExerciseResponse{Concepts: concepts, WarnInfo: warn, Questions: qs}
 }
 
-func registerRoutes(h *server.Hertz) {
-	h.GET("/getDiagnoseList", func(c context.Context, ctx *app.RequestContext) {
+func registerRoutes(r *gin.Engine) {
+    r.GET("/getDiagnoseList", func(ctx *gin.Context) {
 		raw := ctx.Query("imgLink")
 		var imgs []string
 		if raw != "" {
@@ -109,7 +108,7 @@ func registerRoutes(h *server.Hertz) {
 			var err error
 			systemInfo := "你是一个诊断高中数学试卷的助手，根据试卷图片链接生成诊断结果。诊断结果格式按照以下结构体返回struct GetScoreResponse {\n    1: i64 ScoreSpace\n    2: list<diagnoseInfo> diagnoseList\n    3: Report report // 核心报告\n}\nstruct DiagnoseInfo {\n    1: string Title // 全等三角形判定\n    2: string Degree // 70%\n    3: i64 Status // 0:绿灯 1：蓝灯 2:红灯\n    4: i64 ExpectScore // 预计增加分数 \n    5: string Description // 分析：基础扎实\n    6: bool isDiagnose // 标记当前是否需要可诊断\n}\nstruct Report {\n    1: string Comments 总体评论\n    2: i64 allScore // 潜力提升空间分数\n    3: list<Guide> Guides // 行动指南\n    4: Strategy Strategy // 策略\n}\nstruct Guide {\n    1: string Title\n    2: string Description\n}\nstruct Strategy {\n    1: string Tille\n    2: string AbandonInfo\n    3: string KeepInfo\n    4: string OvercomeInfo\n}"
 			inputInfo := "根据以下图片链接生成诊断结果，必须返回严格JSON，字段为ScoreSpace、diagnoseList、Report，字段名大小写需与示例完全一致。图片链接：" + strings.Join(imgs, ",")
-			out, err = callAIForDiagnose(c, imgs, auth, appID, appKey, systemInfo, inputInfo)
+            out, err = callAIForDiagnose(ctx.Request.Context(), imgs, auth, appID, appKey, systemInfo, inputInfo)
 			if err == nil {
 				ok = true
 			}
@@ -120,14 +119,14 @@ func registerRoutes(h *server.Hertz) {
 		ctx.JSON(200, out)
 	})
 
-	h.GET("/getExercise", func(c context.Context, ctx *app.RequestContext) {
-		title := ctx.Query("title")
-		desc := ctx.Query("description")
-		resp := buildExerciseResponse(title, desc)
-		ctx.JSON(200, resp)
-	})
+r.GET("/getExercise", func(ctx *gin.Context) {
+    title := ctx.Query("title")
+    desc := ctx.Query("description")
+    resp := buildExerciseResponse(title, desc)
+    ctx.JSON(200, resp)
+})
 
-	h.POST("/chat/completions", func(c context.Context, ctx *app.RequestContext) {
+r.POST("/chat/completions", func(ctx *gin.Context) {
 		type ChatMessage struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
@@ -136,13 +135,13 @@ func registerRoutes(h *server.Hertz) {
 			Model    string        `json:"model"`
 			Messages []ChatMessage `json:"messages"`
 		}
-		var req ChatRequest
-		bdy, _ := ctx.Body()
-		if err := json.Unmarshal(bdy, &req); err != nil {
-			ctx.JSON(400, map[string]any{"error": "invalid json"})
-			return
-		}
-		auth := string(ctx.GetHeader("Authorization"))
+    var req ChatRequest
+    bdy, _ := ctx.GetRawData()
+    if err := json.Unmarshal(bdy, &req); err != nil {
+        ctx.JSON(400, map[string]any{"error": "invalid json"})
+        return
+    }
+    auth := ctx.GetHeader("Authorization")
 		appID := os.Getenv("TAL_MLOPS_APP_ID")
 		appKey := os.Getenv("TAL_MLOPS_APP_KEY")
 		if auth == "" && (appID == "" || appKey == "") {
@@ -150,30 +149,28 @@ func registerRoutes(h *server.Hertz) {
 			return
 		}
 		payload, _ := json.Marshal(req)
-		r, _ := http.NewRequestWithContext(c, "POST", chatAPIEndpoint, bytes.NewReader(payload))
-		if auth != "" {
-			r.Header.Set("Authorization", auth)
-		} else {
-			r.Header.Set("Authorization", "Bearer "+appID+":"+appKey)
-		}
-		r.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(r)
+    upReq, _ := http.NewRequestWithContext(ctx.Request.Context(), "POST", chatAPIEndpoint, bytes.NewReader(payload))
+    if auth != "" {
+        upReq.Header.Set("Authorization", auth)
+    } else {
+        upReq.Header.Set("Authorization", "Bearer "+appID+":"+appKey)
+    }
+    upReq.Header.Set("Content-Type", "application/json")
+    resp, err := http.DefaultClient.Do(upReq)
 		if err != nil {
 			ctx.JSON(502, map[string]any{"error": "upstream error"})
 			return
 		}
 		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		ctx.SetContentType("application/json")
-		ctx.SetStatusCode(200)
-		ctx.Write(b)
-	})
+    b, _ := io.ReadAll(resp.Body)
+    ctx.Data(200, "application/json", b)
+})
 }
 
 func main() {
-	h := server.Default(server.WithHostPorts(":3000"))
-	registerRoutes(h)
-	h.Spin()
+    r := gin.Default()
+    registerRoutes(r)
+    r.Run(":3000")
 }
 
 type chatMsg struct {
@@ -239,19 +236,19 @@ func callAIForDiagnose(c context.Context, imgs []string, auth, appID, appKey, sy
 }
 
 func extractJSONFromContent(s string) string {
-	if idx := strings.Index(s, "<<<<<<"); idx >= 0 {
-		rest := s[idx+3:]
-		if strings.HasPrefix(rest, "json") {
-			rest = rest[4:]
-		}
-		if end := strings.Index(rest, ">>>>>>"); end >= 0 {
-			return strings.TrimSpace(rest[:end])
-		}
-	}
-	start := strings.Index(s, "{")
-	end := strings.LastIndex(s, "}")
-	if start >= 0 && end >= 0 && end >= start {
-		return s[start : end+1]
-	}
-	return s
+    if idx := strings.Index(s, "```"); idx >= 0 {
+        rest := s[idx+3:]
+        if strings.HasPrefix(rest, "json") {
+            rest = rest[4:]
+        }
+        if end := strings.Index(rest, "```"); end >= 0 {
+            return strings.TrimSpace(rest[:end])
+        }
+    }
+    start := strings.Index(s, "{")
+    end := strings.LastIndex(s, "}")
+    if start >= 0 && end >= 0 && end >= start {
+        return s[start : end+1]
+    }
+    return s
 }
