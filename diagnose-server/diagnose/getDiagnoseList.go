@@ -130,8 +130,7 @@ c. [绿灯：保持发挥] (保底分) 对应GetDiagnoseListResponse中第三个
 结合“选取掌握度 > 90% 的基础计算或常考点。”和“给出“无需额外刷题、跟进进度”的安抚建议。” 给出GetDiagnoseListResponse中FinalAnalysis字段的第三个元素的AnalysisItemDesp字段值。
 `
 	aiStep2 := `你是学习规划师。基于提供的试卷分析 JSON，执行以下任务：
-5. 每个Question中Select的元素不要包含A. B. C. ,仅包含选项描述字符串即可，一定不要出现这种：“A. 最大值为2，x=3”或者“A 最大值为2，x=3”，预期应该输出以下文案：“最大值为2，x=3”，并且CorrectAnswer的值为正确答案的字符串，例如：若selcet中的["x=1","x=2","x=3","x=4"]，则CorrectAnswer的值为"x=3"。
-6. 每个Question只出概念题，不需要出计算题，不带公式或者避免出现特殊符号, 以下符号都不要出现：'~','·'，'#','$','¥'。
+5.Question只出概念题，不需要出计算题，不带公式或者避免出现特殊符号, 以下符号都不要出现：'~','·'，'#','$','¥'；并且每个Question中Select的元素不要包含A. B. C. ,仅包含选项描述字符串即可，一定不要出现这种：“A. 最大值为2，x=3”或者“A 最大值为2，x=3”，预期应该输出以下文案：“最大值为2，x=3”，并且CorrectAnswer的值为正确答案的字符串，例如：若selcet中的["x=1","x=2","x=3","x=4"]，则CorrectAnswer的值为"x=3"。
 `
 	prompt := "根据以下图片链接生成诊断结果，必须返回严格JSON，链接列表：" + strings.Join(imgs, ",")
 	payload := map[string]any{
