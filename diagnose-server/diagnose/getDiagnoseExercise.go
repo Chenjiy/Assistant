@@ -1,13 +1,13 @@
 package diagnose
 
 import (
-    "bytes"
-    "diagnose-server/model"
-    "diagnose-server/utils"
-    "encoding/json"
-    "fmt"
-    "github.com/gin-gonic/gin"
-    "net/http"
+	"bytes"
+	"diagnose-server/model"
+	"diagnose-server/utils"
+	"encoding/json"
+	"fmt"
+	"github.com/gin-gonic/gin"
+	"net/http"
 )
 
 func GetDiagnoseExercise(ctx *gin.Context) {
@@ -29,65 +29,65 @@ func GetDiagnoseExercise(ctx *gin.Context) {
 }
 
 func getExercise(ctx *gin.Context, request model.GetDiagnoseExerciseRequest) (model.GetExerciseResponse, error) {
-    title := request.Title
-    desc := request.Description
-    if title == "" {
-        title = "全等三角形判定概念"
-    }
-    prompt := "根据以下主题与描述生成练习题，必须返回严格JSON。主题：" + title + "；描述：" + desc
+	title := request.Title
+	desc := request.Description
+	if title == "" {
+		title = "全等三角形判定概念"
+	}
+	prompt := "根据以下主题与描述生成练习题，必须返回严格JSON。主题：" + title + "；描述：" + desc
 
-    payload := map[string]any{
-        "model": "gemini-3-pro",
-        "messages": []map[string]string{
-            {
-                "role":    "system",
-                "content": "你是一个高中数学练习生成助手。请基于主题与描述生成练习数据，并严格按以下结构体返回JSON：\nstruct GetExerciseResponse {\n    1: string Title\n    2: string Concepts\n    3: string WarnInfo\n    4: list<Question> Questions\n}\n\nstruct Question {\n    1: string Title\n    2: list<string> Select\n    3: string CorrectAnswer\n}",
-            },
-            {
-                "role":    "user",
-                "content": prompt,
-            },
-        },
-    }
+	payload := map[string]any{
+		"model": "gemini-3-flash",
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "你是一个高中数学练习生成助手。请基于主题与描述生成练习数据，并严格按以下结构体返回JSON：\nstruct GetExerciseResponse {\n    1: string Title\n    2: string Concepts\n    3: string WarnInfo\n    4: list<Question> Questions\n}\n\nstruct Question {\n    1: string Title\n    2: list<string> Select\n    3: string CorrectAnswer\n}",
+			},
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		},
+	}
 
-    body, _ := json.Marshal(payload)
-    reqUp, _ := http.NewRequestWithContext(ctx.Request.Context(), "POST", "http://ai-service.tal.com/openai-compatible/v1/chat/completions", bytes.NewReader(body))
+	body, _ := json.Marshal(payload)
+	reqUp, _ := http.NewRequestWithContext(ctx.Request.Context(), "POST", "http://ai-service.tal.com/openai-compatible/v1/chat/completions", bytes.NewReader(body))
 
-    appID := "300000281"
-    appKey := "2be1698da309b52eb807e9ac2d6a4ff1"
-    if appID != "" && appKey != "" {
-        reqUp.Header.Set("Authorization", "Bearer "+appID+":"+appKey)
-    }
-    reqUp.Header.Set("Content-Type", "application/json")
+	appID := "300000281"
+	appKey := "2be1698da309b52eb807e9ac2d6a4ff1"
+	if appID != "" && appKey != "" {
+		reqUp.Header.Set("Authorization", "Bearer "+appID+":"+appKey)
+	}
+	reqUp.Header.Set("Content-Type", "application/json")
 
-    resp, err := http.DefaultClient.Do(reqUp)
-    if err != nil {
-        return model.GetExerciseResponse{}, err
-    }
-    defer resp.Body.Close()
+	resp, err := http.DefaultClient.Do(reqUp)
+	if err != nil {
+		return model.GetExerciseResponse{}, err
+	}
+	defer resp.Body.Close()
 
-    var aiResp struct {
-        Choices []struct {
-            Message struct {
-                Content string `json:"content"`
-            } `json:"message"`
-        } `json:"choices"`
-    }
-    if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
-        return model.GetExerciseResponse{}, err
-    }
-    if len(aiResp.Choices) == 0 || aiResp.Choices[0].Message.Content == "" {
-        return model.GetExerciseResponse{}, &json.SyntaxError{}
-    }
+	var aiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
+		return model.GetExerciseResponse{}, err
+	}
+	if len(aiResp.Choices) == 0 || aiResp.Choices[0].Message.Content == "" {
+		return model.GetExerciseResponse{}, &json.SyntaxError{}
+	}
 
-    raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
+	raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
 
-    var out model.GetExerciseResponse
-    if err := json.Unmarshal([]byte(raw), &out); err != nil {
-        fmt.Println("解析ai内容为json失败：", err)
-        return model.GetExerciseResponse{}, err
-    }
-    return out, nil
+	var out model.GetExerciseResponse
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		fmt.Println("解析ai内容为json失败：", err)
+		return model.GetExerciseResponse{}, err
+	}
+	return out, nil
 }
 
 func buildDiagnoseExercise(req model.GetDiagnoseExerciseRequest) model.GetExerciseResponse {

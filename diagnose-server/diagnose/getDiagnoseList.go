@@ -30,7 +30,7 @@ func GetDiagnoseList(ctx *gin.Context) {
 func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse, error) {
 	prompt := "根据以下图片链接生成诊断结果，必须返回严格JSON，链接列表：" + strings.Join(imgs, ",")
 	payload := map[string]any{
-		"model": "gemini-3-pro",
+		"model": "gemini-3-flash",
 		"messages": []map[string]string{
 			{
 				"role":    "system",
