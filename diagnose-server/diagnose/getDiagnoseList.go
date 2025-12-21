@@ -79,6 +79,7 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 6. DiagnoseList中每一项的Status，1表示绿灯，2表示蓝灯，3表示红；Degree表示知识点掌握程度，例如：33%；ExpectScore是预期提升分数；IsDiagnose 表示蓝灯中分值最高的为 true，其他均为false
 7. StudyMethod： 从三个方面给出学习建议，例如：概念、计算、心态”。
 8. AnalysisTitle: 字符大小不超过10个字
+9. Title中不要包含转义字符
 `
 	prompt := "根据以下图片链接生成诊断结果，必须返回严格JSON，链接列表：" + strings.Join(imgs, ",")
 	payload := map[string]any{
