@@ -86,7 +86,9 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
   $$ROI = \frac{\text{该知识点总分值} \times (1 - \text{当前掌握度})}{\text{知识点层级(难度)} \times \text{错误类型系数}}$$
   （注：粗心错误系数小，概念不清系数大）
 4. 生成话术： 为每个灯生成一句简短评价（如“此路不通，暂且绕行”）。
-5. 错误点描述： 针对各种灯下的错题，用一句话总结共性病灶（如：“对全等判定中的‘边角边’条件识别不准”）。`
+5. 错误点描述： 针对各种灯下的错题，用一句话总结共性病灶（如：“对全等判定中的‘边角边’条件识别不准”）。
+6. DiagnoseList中每一项的Status，1表示绿灯，2表示蓝灯，3表示红；Degree表示知识点掌握程度，例如：33%；ExpectScore是预期提升分数；IsDiagnose 表示蓝灯中分值最高的为 true，其他均为false
+`
 	prompt := "根据以下图片链接生成诊断结果，必须返回严格JSON，链接列表：" + strings.Join(imgs, ",")
 	payload := map[string]any{
 		"model": "gemini-3-flash",
