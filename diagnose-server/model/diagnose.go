@@ -1,7 +1,7 @@
 package model
 
 type GetDiagnoseListRequest struct {
-    ImgLink []string `json:"ImgLink" form:"ImgLink"`
+	ImgLink []string `json:"ImgLink" form:"ImgLink"`
 }
 
 type GetDiagnoseListResponse struct {
@@ -47,6 +47,7 @@ type DiagnoseInfo struct {
 	ExpectScore int64  `json:"ExpectScore"`
 	Description string `json:"Description"`
 	IsDiagnose  bool   `json:"IsDiagnose"`
+	Score       int64  `json:"Score"`
 }
 
 type GetDiagnoseExerciseRequest struct {
