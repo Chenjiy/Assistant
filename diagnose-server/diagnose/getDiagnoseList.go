@@ -53,7 +53,6 @@ func GetDiagnoseList(ctx *gin.Context) {
 }
 
 func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse, error) {
-	aiRoleSet := "你是一个诊断高中数学试卷的助手，根据试卷图片链接生成诊断结果。"
 	aiRespSet := "返回结果按照下面的结构体返回, type GetDiagnoseListResponse struct {\n\tReport        Report         `json:\"Report\"`\n\tScoreSpace    int64          `json:\"ScoreSpace\"`\n\tDiagnoseList  []DiagnoseInfo `json:\"DiagnoseList\"`\n\tFinalAnalysis []FinalAnalysis  `json:\"FinalAnalysis\"`\n}\n\ntype FinalAnalysis struct {\n\tAnalysisTitle string         `json:\"AnalysisTitle\"`\n\tAnalysisItem  []AnalysisItem `json:\"AnalysisItem\"`\n}\n\ntype AnalysisItem struct {\n\tAnalysisItemTitle string `json:\"AnalysisItemTitle\"`\n\tAnalysisItemDesp  string `json:\"AnalysisItemDesp\"`\n}\n\ntype Report struct {\n\tConclusion  string       `json:\"Conclusion\"`\n\tKSMAnalysis []CommonInfo `json:\"KSMAnalysis\"`\n\tStudyMethod []CommonInfo `json:\"StudyMethod\"`\n}\n\ntype CommonInfo struct {\n\tTitle       string `json:\"Title\"`\n\tDescription string `json:\"Description\"`\n}\n\ntype DiagnoseInfo struct {\n\tTitle       string `json:\"Title\"`\n\tDegree      string `json:\"Degree\"`\n\tStatus      int64  `json:\"Status\"`\n\tExpectScore int64  `json:\"ExpectScore\"`\n\tScore       int64  `json:\"Score\"`\n\tDescription string `json:\"Description\"`\n\tIsDiagnose  bool   `json:\"IsDiagnose\"`\n}\n\ntype GetDiagnoseExerciseRequest struct {\n\tTitle       string `json:\"Title\"`\n\tDescription string `json:\"Description\"`\n}\n\ntype GetExerciseResponse struct {\n\tTitle     string     `json:\"Title\"`\n\tConcepts  string     `json:\"Concepts\"`\n\tWarnInfo  string     `json:\"WarnInfo\"`\n\tQuestions []Question `json:\"Questions\"`\n}\n\ntype Question struct {\n\tTitle         string   `json:\"Title\"`\n\tSelect        []string `json:\"Select\"`\n\tCorrectAnswer string   `json:\"CorrectAnswer\"`\n}"
 	aiStep1 := `你是一名资深中考数学阅卷专家。请分析图片链接的图片，先识别每道题目的以下信息并以 JSON 格式输出：\n
 1. 题目信息： 题号、题型、分值、正确答案。\n
@@ -100,7 +99,7 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 
 
 任务要求：
-1. 总体评价：120-130 字。结合 KSM 分布评价状态，给出整体冲刺节奏建议。该点对应GetDiagnoseListResponse中Report的Conclusion字段。
+1. 总体评价：120-130 字。结合 KSM 分布评价状态，给出整体冲刺节奏建议。该点对应GetDiagnoseListResponse中Report的Conclusion字段，分数 得分率等量化名词不要出现 也不要出现红灯 蓝灯 绿灯词汇相关。
 2. 潜力值展示：显示计算后的 $P_s$（蓝灯总分）。该点对应GetDiagnoseListResponse中ScoreSpace字段（该值一定小于28）。
 3. 三类学习方法 (必须输出 3 项，每项 45-75 字)：该点对应GetDiagnoseListResponse中Report的StudyMethod字段。
   - 概念模糊类：匹配 [费曼学习法]，给出明天中午找同桌讲解的具体动作。该点对应GetDiagnoseListResponse中Report的StudyMethod字段的第一项的Description字段值，该项的Title字段值为“概念模糊类”。
@@ -138,7 +137,7 @@ c. [绿灯：保持发挥] (保底分) 对应GetDiagnoseListResponse中第三个
 		"messages": []map[string]string{
 			{
 				"role":    "system",
-				"content": aiRoleSet + aiRespSet + aiStep1 + aiStep2,
+				"content": aiRespSet + aiStep1 + aiStep2,
 			},
 			{
 				"role":    "user",
