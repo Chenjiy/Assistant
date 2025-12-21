@@ -13,42 +13,31 @@ import (
 
 func GetDiagnoseList(ctx *gin.Context) {
 	var req model.GetDiagnoseListRequest
-	if ctx.Request.Method == http.MethodPost {
-		ct := ctx.GetHeader("Content-Type")
-		if strings.Contains(ct, "application/json") {
-			b, _ := ctx.GetRawData()
-			if err := json.Unmarshal(b, &req); err != nil {
-				ctx.JSON(400, gin.H{"error": "invalid json"})
-				return
-			}
-		} else if strings.Contains(ct, "application/x-www-form-urlencoded") || strings.Contains(ct, "multipart/form-data") {
-			_ = ctx.Request.ParseForm()
-			arr := ctx.PostFormArray("ImgLink")
-			if len(arr) == 0 {
-				v := ctx.PostForm("ImgLink")
-				if v != "" {
-					arr = strings.Split(v, ",")
-				}
-			}
-			req.ImgLink = arr
-		} else {
-			if err := ctx.ShouldBind(&req); err != nil {
-				b, _ := ctx.GetRawData()
-				if err2 := json.Unmarshal(b, &req); err2 != nil {
-					ctx.JSON(400, gin.H{"error": "invalid json"})
-					return
-				}
-			}
+	ct := ctx.GetHeader("Content-Type")
+	if strings.Contains(ct, "application/json") {
+		b, _ := ctx.GetRawData()
+		if err := json.Unmarshal(b, &req); err != nil {
+			ctx.JSON(400, gin.H{"error": "invalid json"})
+			return
 		}
-	} else {
-		arr := ctx.QueryArray("ImgLink")
+	} else if strings.Contains(ct, "application/x-www-form-urlencoded") || strings.Contains(ct, "multipart/form-data") {
+		_ = ctx.Request.ParseForm()
+		arr := ctx.PostFormArray("ImgLink")
 		if len(arr) == 0 {
-			v := ctx.Query("ImgLink")
+			v := ctx.PostForm("ImgLink")
 			if v != "" {
 				arr = strings.Split(v, ",")
 			}
 		}
 		req.ImgLink = arr
+	} else {
+		if err := ctx.ShouldBind(&req); err != nil {
+			b, _ := ctx.GetRawData()
+			if err2 := json.Unmarshal(b, &req); err2 != nil {
+				ctx.JSON(400, gin.H{"error": "invalid json"})
+				return
+			}
+		}
 	}
 	if len(req.ImgLink) == 0 {
 		ctx.JSON(400, gin.H{"error": "missing ImgLink"})

@@ -8,16 +8,27 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
+	"strings"
 )
 
 func GetDiagnoseExercise(ctx *gin.Context) {
 	var req model.GetDiagnoseExerciseRequest
-	b, _ := ctx.GetRawData()
 	// 解析参数
-	if err := json.Unmarshal(b, &req); err != nil {
-		fmt.Println("解析请求为json失败：", err)
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
-		return
+	ct := ctx.GetHeader("Content-Type")
+	if strings.Contains(ct, "application/json") {
+		b, _ := ctx.GetRawData()
+		if err := json.Unmarshal(b, &req); err != nil {
+			ctx.JSON(400, gin.H{"error": "invalid json"})
+			return
+		}
+	} else {
+		if err := ctx.ShouldBind(&req); err != nil {
+			b, _ := ctx.GetRawData()
+			if err2 := json.Unmarshal(b, &req); err2 != nil {
+				ctx.JSON(400, gin.H{"error": "invalid json"})
+				return
+			}
+		}
 	}
 	out, err := getExercise(ctx, req)
 
