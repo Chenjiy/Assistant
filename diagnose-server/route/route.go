@@ -7,7 +7,7 @@ import (
 )
 
 func RegisterRoutes(r *gin.Engine) {
-	r.GET("/omg/getDiagnoseList", diagnose.GetDiagnoseList)
+	r.POST("/omg/getDiagnoseList", diagnose.GetDiagnoseList)
 
 	r.GET("/omg/getExercise", diagnose.GetDiagnoseExercise)
 }
