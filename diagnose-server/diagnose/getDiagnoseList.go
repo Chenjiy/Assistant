@@ -119,6 +119,7 @@ a. [蓝灯：最应该重点投入] (高性价比点) 对应GetDiagnoseListRespo
   ① 看模型：建议 15 分钟回顾具体的模型/知识点关系。
   ② 做对题：建议完成 3 道典型题并写清解题判定条件。
   ③ 防失误：总结 2 条在草稿本上的具体预防动作。
+仿照上面的标准化动作的描述，对于GetDiagnoseListResponse中FinalAnalysis字段的第一个元素的AnalysisItem，在这个元素内添加三个AnalysisItem元素（AnalysisItem的Title字段仿照“做模型”，“做对题”，“防失误”输出 3 个标准化动作；AnalysisItem的Description字段值仿照“建议 15 分钟回顾具体的模型/知识点关系”，“建议完成 3 道典型题并写清解题判定条件”，“总结 2 条在草稿本上的具体预防动作”）
 对应GetDiagnoseListResponse中FinalAnalysis字段的第二个元素的AnalysisItemDesp字段值。
     
 b. [红灯：建议放弃] (短期投入产出比低) 对应GetDiagnoseListResponse中第二个元素FinalAnalysis的AnalysisTitle字段，值为上面红灯题目对应知识点的抽象集合，要求字数在10个以内，例如：三角形全等&几何”。
