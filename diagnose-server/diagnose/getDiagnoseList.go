@@ -29,12 +29,15 @@ func GetDiagnoseList(ctx *gin.Context) {
 
 func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse, error) {
 	prompt := "根据以下图片链接生成诊断结果，必须返回严格JSON，链接列表：" + strings.Join(imgs, ",")
+	aiRoleSet := "你是一个诊断高中数学试卷的助手，根据试卷图片链接生成诊断结果。"
+	aiRespSet := "返回结果按照下面的结构体返回, type GetDiagnoseListResponse struct {\n\tReport        Report         `json:\"Report\"`\n\tScoreSpace    int64          `json:\"ScoreSpace\"`\n\tDiagnoseList  []DiagnoseInfo `json:\"DiagnoseList\"`\n\tFinalAnalysis FinalAnalysis  `json:\"FinalAnalysis\"`\n}\n\ntype FinalAnalysis struct {\n\tAnalysisTitle string         `json:\"AnalysisTitle\"`\n\tAnalysisItem  []AnalysisItem `json:\"AnalysisItem\"`\n}\n\ntype AnalysisItem struct {\n\tAnalysisItemTitle string `json:\"AnalysisItemTitle\"`\n\tAnalysisItemDesp  string `json:\"AnalysisItemDesp\"`\n}\n\ntype Report struct {\n\tConclusion  string       `json:\"Conclusion\"`\n\tKSMAnalysis []CommonInfo `json:\"KSMAnalysis\"`\n\tStudyMethod []CommonInfo `json:\"StudyMethod\"`\n}\n\ntype CommonInfo struct {\n\tTitle       string `json:\"Title\"`\n\tDescription string `json:\"Description\"`\n}\n\ntype DiagnoseInfo struct {\n\tTitle       string `json:\"Title\"`\n\tDegree      string `json:\"Degree\"`\n\tStatus      int64  `json:\"Status\"`\n\tExpectScore int64  `json:\"ExpectScore\"`\n\tDescription string `json:\"Description\"`\n\tIsDiagnose  bool   `json:\"IsDiagnose\"`\n}\n\ntype GetDiagnoseExerciseRequest struct {\n\tTitle       string `json:\"Title\"`\n\tDescription string `json:\"Description\"`\n}\n\ntype GetExerciseResponse struct {\n\tTitle     string     `json:\"Title\"`\n\tConcepts  string     `json:\"Concepts\"`\n\tWarnInfo  string     `json:\"WarnInfo\"`\n\tQuestions []Question `json:\"Questions\"`\n}\n\ntype Question struct {\n\tTitle         string   `json:\"Title\"`\n\tSelect        []string `json:\"Select\"`\n\tCorrectAnswer string   `json:\"CorrectAnswer\"`\n}"
+
 	payload := map[string]any{
 		"model": "gemini-3-flash",
 		"messages": []map[string]string{
 			{
 				"role":    "system",
-				"content": "你是一个诊断高中数学试卷的助手，根据试卷图片链接生成诊断结果。诊断结果格式严格按照以下结构体返回,struct getDiagnoseListResponse {\n    1: Report report // 核心报告\n    2: i64 ScoreSpace\n    3: list<diagnoseInfo> diagnoseList\n}\n\nstruct Report {\n    1: string Conclusion // 总评\n    2: list<CommonInfo> KSMAnalysis // KSM分析\n    3: list<CommonInfo> StudyMethod // 学习方法   \n}\n\nstruct CommonInfo {\n    1: string Title\n    2：string Description\n}\n\nstruct DiagnoseInfo {\n    1: string Title // 全等三角形判定概念\n    2: string Degree // 70%\n    3: i64 Status // 0:绿灯 1：蓝灯 2:红灯\n    4: i64 ExpectScore // 预计增加分数 \n    5: string Description // 分析：基础扎实\n    6: bool isDiagnose // 标记当前是否需要可诊断\n}",
+				"content": aiRoleSet + aiRespSet,
 			},
 			{
 				"role":    "user",

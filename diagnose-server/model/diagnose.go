@@ -5,9 +5,20 @@ type GetDiagnoseListRequest struct {
 }
 
 type GetDiagnoseListResponse struct {
-	Report       Report         `json:"Report"`
-	ScoreSpace   int64          `json:"ScoreSpace"`
-	DiagnoseList []DiagnoseInfo `json:"DiagnoseList"`
+	Report        Report         `json:"Report"`
+	ScoreSpace    int64          `json:"ScoreSpace"`
+	DiagnoseList  []DiagnoseInfo `json:"DiagnoseList"`
+	FinalAnalysis FinalAnalysis  `json:"FinalAnalysis"`
+}
+
+type FinalAnalysis struct {
+	AnalysisTitle string         `json:"AnalysisTitle"`
+	AnalysisItem  []AnalysisItem `json:"AnalysisItem"`
+}
+
+type AnalysisItem struct {
+	AnalysisItemTitle string `json:"AnalysisItemTitle"`
+	AnalysisItemDesp  string `json:"AnalysisItemDesp"`
 }
 
 type Report struct {
@@ -27,7 +38,7 @@ type DiagnoseInfo struct {
 	Status      int64  `json:"Status"`
 	ExpectScore int64  `json:"ExpectScore"`
 	Description string `json:"Description"`
-	IsDiagnose  bool   `json:"isDiagnose"`
+	IsDiagnose  bool   `json:"IsDiagnose"`
 }
 
 type GetDiagnoseExerciseRequest struct {
