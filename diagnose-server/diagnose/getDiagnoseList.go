@@ -61,13 +61,87 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 3. 知识点归属： 必须包含 1-5 级知识点（参考中考数学大纲），
 例如：几何 -> 三角形 -> 全等三角形 -> 全等三角形判定 -> SSS/SAS。\n
 4. 错误原因分类： [概念模糊, 计算粗心, 逻辑断档, 题目理解偏差, 放弃作答]。\n
-5. 难度： 0.1-1.0（1.0最难）。仅获取 JSON，确保数据严谨。`
+5. 难度： 0.1-1.0（1.0最难）。仅获取 JSON，确保数据严谨。
+
+[OCR 严谨性协议 - 强制执行]：
+1. 来源锚点校验：处理图片前必须识别页眉文字（如“2025年北京朝阳区一模”）。严禁使用历史对话中的试卷来源或题号。
+2. 题号唯一性：仅以图片中加粗的数字标号（如 10, 15）为法定题号，忽略学生手写数字。
+3. 防幻觉机制：严禁虚构当前图片中不存在的题目内容或分值。
+[核心算法逻辑 - ROI 驱动]：
+1. 提分潜力值 ($P_s$)：Σ 所有蓝灯区（掌握度 $[50\%, 90\%)$）题目的原始分值。
+2. 预计提分 (单项展示用)：$分值 \times 0.5$（代表阅读诊断报告后的初步认知增益）。
+3. 下次考试预估提升 ($G_e$)：$G_e = (\text{本次练习题分值} \times \text{正确率}) + (\sum \text{剩余蓝灯分值} \times 0.5)$。
+4. 推荐指数 (后台排序用)：$\text{推荐指数} = 分值 \times (\text{掌握度} / 100)$。
+
+[蓝灯排序准则]：
+- 严格按 [推荐指数] 降序排列。
+- 逻辑：优先推送那些“分值高且学生已有较好基础（最易提分）”的黄金题目。
+基于提供的试卷分析 JSON，执行以下任务：
+1. 计算掌握度： 统计每个二级知识点下，学生的（实得分/总分值）。
+2. 灯号分配：
+  - 绿灯：掌握度 > 90%。
+  - 蓝灯：50% <= 掌握度 < 90%（提分重点）。
+  - 红灯/灰灯：掌握度 < 50%。
+3. 计算提分潜力：
+  - 找出 ROI 最高的蓝灯：分值占比大且当前掌握度在 70%-85% 之间的知识点。
+  - 预测得分：该知识点失分数 $\times 0.8$。
+  - 计算 ROI 的关键变量： 建议引入“题目分值”与“错误类型”权重。计算公式优化为：
+  $$ROI = \frac{\text{该知识点总分值} \times (1 - \text{当前掌握度})}{\text{知识点层级(难度)} \times \text{错误类型系数}}$$
+  （注：粗心错误系数小，概念不清系数大）
+4. 生成话术： 为每个灯生成一句简短评价（如“此路不通，暂且绕行”）。
+5. 错误点描述： 针对各种灯下的错题，用一句话总结共性病灶（如：“对全等判定中的‘边角边’条件识别不准”）。
+
+对应GetDiagnoseListResponse中DiagnoseInfo字段的返回值
+按照试卷的每道题目的掌握度，分为不同的等级， - 绿灯：掌握度 > 90%。 - 蓝灯：50% <= 掌握度 < 90%（提分重点）。- 红灯/灰灯：掌握度 < 50%。
+对于蓝灯的题目对应的知识点进行大致分类（不超过五类），每一类创建一个DiagnoseInfo元素，将该项元素标记为蓝灯（将DiagnoseInfo中的Status值设置为1，对应蓝灯），并给出每一类知识点的标题（对应DiagnoseInfo中的Title字段），知识点的分析（对应DiagnoseInfo中的Description字段），知识点的掌握度（对应DiagnoseInfo中的Degree字段），这张试卷的该类题目的分数总和（对应DiagnoseInfo中的Score字段），预期学好这个知识点能达到的预期分数（对应DiagnoseInfo中的ExpectScore, 该值一定<=Score的值），将创建的每一类DiagnoseInfo蓝灯元素加入GetDiagnoseListResponse.DiagnoseList中
+对于红灯的题目对应的知识点进行大致分类（不超过五类），标记为红灯（将DiagnoseInfo中的Status值设置为2，对应红灯），并给出每一类知识点的标题（对应DiagnoseInfo中的Title字段），知识点的分析（对应DiagnoseInfo中的Description字段），知识点的掌握度（对应DiagnoseInfo中的Degree字段），这张试卷的该类题目的分数总和（对应DiagnoseInfo中的Score字段），预期学好这个知识点能达到的预期分数（对应DiagnoseInfo中的ExpectScore, 该值一定<=Score的值），将创建的每一类DiagnoseInfo蓝灯元素加入GetDiagnoseListResponse.DiagnoseList中
+对于绿灯的题目对应的知识点进行大致分类（不超过五类），标记为绿灯（将DiagnoseInfo中的Status值设置为3，对应绿灯），并给出每一类知识点的标题（对应DiagnoseInfo中的Title字段），知识点的分析（对应DiagnoseInfo中的Description字段），知识点的掌握度（对应DiagnoseInfo中的Degree字段），这张试卷的该类题目的分数总和（对应DiagnoseInfo中的Score字段），预期学好这个知识点能达到的预期分数（对应DiagnoseInfo中的ExpectScore, 该值一定<=Score的值），将创建的每一类DiagnoseInfo蓝灯元素加入GetDiagnoseListResponse.DiagnoseList中
+最后将DiagnoseInfo中，DiagnoseInfo中的Status为1的元素（蓝灯）中，在Status为1的GetDiagnoseListResponse.DiagnoseList元素中找出Score的值是最大的那项元素，将该项元素的IsDiagnose字段设置为true，其余所有元素的值均为false
+
+
+任务要求：
+1. 总体评价：120-130 字。结合 KSM 分布评价状态，给出整体冲刺节奏建议。该点对应GetDiagnoseListResponse中Report的Conclusion字段。
+2. 潜力值展示：显示计算后的 $P_s$（蓝灯总分）。该点对应GetDiagnoseListResponse中ScoreSpace字段（该值一定小于28）。
+3. 三类学习方法 (必须输出 3 项，每项 45-75 字)：该点对应GetDiagnoseListResponse中Report的StudyMethod字段。
+  - 概念模糊类：匹配 [费曼学习法]，给出明天中午找同桌讲解的具体动作。该点对应GetDiagnoseListResponse中Report的StudyMethod字段的第一项的Description字段值，该项的Title字段值为“概念模糊类”。
+  - 计算粗心类：匹配 [分步检查法]，要求每写三行停顿 2 秒。该点对应GetDiagnoseListResponse中Report的StudyMethod字段的第二项的Description字段值，该项的Title字段值为“计算粗心类”。
+  - 心态波动类：匹配 [审题减速]，要求在草稿纸写下“这题我先不求快”。该点对应GetDiagnoseListResponse中Report的StudyMethod字段的第三项的Description字段值，该项的Title字段值为“心态波动类”。
+4. 对每一道错题进行深度“病因”分析，判定错误类型（三选一）：该点对应GetDiagnoseListResponse中Report的KSMAnalysis字段
+  - K (Knowledge)：概念模糊、公式记错、性质理解偏差。该点对应GetDiagnoseListResponse中Report的KSMAnalysis字段的第一项的Description字段值（分析输出：给出 20-30 字的精准分析，直接点破失分真相。），该项的Title字段值为“K (Knowledge)”。
+  - S (Skill)：计算跳步、草稿凌乱、枚举漏项。该点对应GetDiagnoseListResponse中Report的KSMAnalysis字段的第二项的Description字段值（分析输出：给出 20-30 字的精准分析，直接点破失分真相。），该项的Title字段值为“S (Skill)”。
+  - M (Mindset)：压轴题畏难、长文本审题缺失、考场急躁。该点对应GetDiagnoseListResponse中Report的KSMAnalysis字段的第三项的Description字段值（分析输出：给出 20-30 字的精准分析，直接点破失分真相。），该项的Title字段值为“M (Mindset)”。
+
+5. 你是一位资深中考数学提分教练，负责为学生生成最后一份“学习建议清单”。基于本次试卷诊断和 3 分钟练习的数据，生成三个梯度的学习行动方案。
+Logic & Constraints 应GetDiagnoseListResponse中FinalAnalysis字段
+a. [蓝灯：最应该重点投入] (高性价比点) 对应GetDiagnoseListResponse中FinalAnalysis字段的第一个元素的AnalysisTitle字段，值为上面蓝灯题目对应知识点的抽象集合，要求字数在10个以内，例如：三角形全等&几何”。
+  - 选取掌握度 50%-90% 且刚练习过的知识点。
+  - 输出 3 个标准化动作：
+  ① 看模型：建议 15 分钟回顾具体的模型/知识点关系。
+  ② 做对题：建议完成 3 道典型题并写清解题判定条件。
+  ③ 防失误：总结 2 条在草稿本上的具体预防动作。
+对应GetDiagnoseListResponse中FinalAnalysis字段的第二个元素的AnalysisItemDesp字段值。
+    
+b. [红灯：建议放弃] (短期投入产出比低) 对应GetDiagnoseListResponse中第二个元素FinalAnalysis的AnalysisTitle字段，值为上面红灯题目对应知识点的抽象集合，要求字数在10个以内，例如：三角形全等&几何”。
+  - 给出“暂缓”理由（如步骤长、模型不熟、得分不稳定）。对应GetDiagnoseListResponse中FinalAnalysis字段的第二个元素的AnalysisItemDesp字段值。
+c. [绿灯：保持发挥] (保底分) 对应GetDiagnoseListResponse中第三个元素FinalAnalysis的AnalysisTitle字段，值为上面红灯题目对应知识点的抽象集合，要求字数在10个以内，例如：三角形全等&几何”。
+  - 选取掌握度 > 90% 的基础计算或常考点。
+  - 给出“无需额外刷题、跟进进度”的安抚建议。
+结合“选取掌握度 > 90% 的基础计算或常考点。”和“给出“无需额外刷题、跟进进度”的安抚建议。” 给出GetDiagnoseListResponse中FinalAnalysis字段的第三个元素的AnalysisItemDesp字段值。
+4. 三色灯列表：
+  - 🔵 蓝灯：按 [推荐指数] 排序，展示“原始分值”及“预计提分（分值*0.5）”。
+  - 🟢 绿灯：合并展示所有掌握度 $\ge 90\%$ 的知识点，标记为“无需再练”。
+  - 🔴 红灯：合并展示所有掌握度 $< 50\%$ 的知识点，标记为“暂且放弃”。
+`
 	aiStep2 := `你是学习规划师。基于提供的试卷分析 JSON，执行以下任务：
 1. 计算掌握度： 统计每个二级知识点下，学生的（实得分/总分值）。
-2. 灯号分配： >    - 绿灯：掌握度 $\ge 90\%$。
+2. 灯号分配：
+  - 绿灯：掌握度 $\ge 90\%$。
   - 蓝灯：$50\% \le$ 掌握度 $< 90\%$（提分重点）。
   - 红灯/灰灯：掌握度 $< 50\%$。
   - 灯的大小策略，**亮度（Opacity）**可以根据“接近 90% 的程度”来设计，越接近 90% 颜色越鲜亮，代表“临门一脚就能提分”。
+6. GetDiagnoseListResponse中ScoreSpace的值为所有蓝灯区（掌握度 $[50\%, 90\%)$）题目的原始分值之和。
+7. GetDiagnoseListResponse中Report中Conclusion的值为所有蓝灯区（掌握度 $[50\%, 90\%)$）题目的错误原因分类中，出现次数最多的错误原因分类。
+
 3. 计算提分潜力：
   - 找出 ROI 最高的蓝灯：分值占比大且当前掌握度在 70%-85% 之间的知识点。
   - 预测得分：该知识点失分数 $\times 0.8$。
@@ -80,8 +154,7 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 7. StudyMethod： 从三个方面给出学习建议，例如：概念、计算、心态”。
 8. AnalysisTitle: 字符大小不超过10个字
 9. Title中不要包含转义字符
-10. 每个Question中select的元素不要包含A\B\C,仅包含选项字符串即可，例如以下格式：“最大值为2，x=3”，并且correctAnswer的值为正确答案的字符串，例如：若selcet中的["x=1","x=2","x=3","x=4"]，则correctAnswer的值为"x=3"。
-11. FinalAnalysis返回三个元素，第一个元素是对应蓝灯的推荐学习建议，第二个元素是对应红灯的 放弃建议，第三个元素是对应灰灯的推荐保持发挥建议。
+10. 每个Question中Select的元素不要包含A. B. C. ,仅包含选项描述字符串即可，一定不要出现这种：“A. 最大值为2，x=3”或者“A 最大值为2，x=3”，预期应该输出以下文案：“最大值为2，x=3”，并且CorrectAnswer的值为正确答案的字符串，例如：若selcet中的["x=1","x=2","x=3","x=4"]，则CorrectAnswer的值为"x=3"。
 `
 	prompt := "根据以下图片链接生成诊断结果，必须返回严格JSON，链接列表：" + strings.Join(imgs, ",")
 	payload := map[string]any{
