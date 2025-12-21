@@ -5,9 +5,9 @@ type GetDiagnoseListRequest struct {
 }
 
 type GetDiagnoseListResponse struct {
-	Report       Report         `json:"report"`
+	Report       Report         `json:"Report"`
 	ScoreSpace   int64          `json:"ScoreSpace"`
-	DiagnoseList []DiagnoseInfo `json:"diagnoseList"`
+	DiagnoseList []DiagnoseInfo `json:"DiagnoseList"`
 }
 
 type Report struct {
