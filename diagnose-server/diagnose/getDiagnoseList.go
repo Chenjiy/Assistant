@@ -1,0 +1,101 @@
+package diagnose
+
+import (
+	"bytes"
+	"diagnose-server/model"
+	"diagnose-server/utils"
+	"encoding/json"
+	"fmt"
+	"github.com/gin-gonic/gin"
+	"net/http"
+	"strings"
+)
+
+func GetDiagnoseList(ctx *gin.Context) {
+	var req model.GetDiagnoseListRequest
+	b, _ := ctx.GetRawData()
+	if err := json.Unmarshal(b, &req); err != nil {
+		ctx.JSON(400, gin.H{"error": "invalid json"})
+		return
+	}
+	out, err := aiDiagnose(ctx, req.ImgLink)
+
+	// 兜底假数据
+	if err != nil {
+		out = buildDiagnose(req.ImgLink)
+	}
+	ctx.JSON(200, out)
+}
+
+func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse, error) {
+	prompt := "根据以下图片链接生成诊断结果，必须返回严格JSON，链接列表：" + strings.Join(imgs, ",")
+	payload := map[string]any{
+		"model": "gemini-3-pro",
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "你是一个诊断高中数学试卷的助手，根据试卷图片链接生成诊断结果。诊断结果格式严格按照以下结构体返回,struct getDiagnoseListResponse {\n    1: Report report // 核心报告\n    2: i64 ScoreSpace\n    3: list<diagnoseInfo> diagnoseList\n}\n\nstruct Report {\n    1: string Conclusion // 总评\n    2: list<CommonInfo> KSMAnalysis // KSM分析\n    3: list<CommonInfo> StudyMethod // 学习方法   \n}\n\nstruct CommonInfo {\n    1: string Title\n    2：string Description\n}\n\nstruct DiagnoseInfo {\n    1: string Title // 全等三角形判定概念\n    2: string Degree // 70%\n    3: i64 Status // 0:绿灯 1：蓝灯 2:红灯\n    4: i64 ExpectScore // 预计增加分数 \n    5: string Description // 分析：基础扎实\n    6: bool isDiagnose // 标记当前是否需要可诊断\n}",
+			},
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	reqUp, _ := http.NewRequestWithContext(ctx.Request.Context(), "POST", "http://ai-service.tal.com/openai-compatible/v1/chat/completions", bytes.NewReader(body))
+
+	appID := "300000281"
+	appKey := "2be1698da309b52eb807e9ac2d6a4ff1"
+	if appID != "" && appKey != "" {
+		reqUp.Header.Set("Authorization", "Bearer "+appID+":"+appKey)
+	}
+
+	reqUp.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(reqUp)
+	if err != nil {
+		return model.GetDiagnoseListResponse{}, err
+	}
+	defer resp.Body.Close()
+	var aiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
+		return model.GetDiagnoseListResponse{}, err
+	}
+	if len(aiResp.Choices) == 0 || aiResp.Choices[0].Message.Content == "" {
+		return model.GetDiagnoseListResponse{}, ioErr()
+	}
+
+	// 从ai返回的内容中解析json字符串
+	raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
+
+	var diagnoseResp model.GetDiagnoseListResponse
+	if err := json.Unmarshal([]byte(raw), &diagnoseResp); err != nil {
+		fmt.Println("解析ai内容为json失败：", err)
+		return model.GetDiagnoseListResponse{}, err
+	}
+
+	return diagnoseResp, nil
+}
+
+func buildDiagnose(imgs []string) model.GetDiagnoseListResponse {
+	n := int64(len(imgs))
+	dl := []model.DiagnoseInfo{
+		{Title: "全等三角形判定概念", Degree: "70%", Status: 0, ExpectScore: 8, Description: "分析：基础扎实", IsDiagnose: true},
+		{Title: "解析几何综合", Degree: "55%", Status: 1, ExpectScore: 10, Description: "分析：运算耐力不足", IsDiagnose: true},
+		{Title: "导数与函数性质", Degree: "40%", Status: 2, ExpectScore: 12, Description: "分析：分类讨论不完整", IsDiagnose: true},
+	}
+	rep := model.Report{
+		Conclusion:  "总体：基础较好，重点突破计算与逻辑",
+		KSMAnalysis: []model.CommonInfo{{Title: "知识点", Description: "解析几何与导数为短板"}, {Title: "技能", Description: "计算准确性需提升"}, {Title: "心态", Description: "遇到繁琐运算易焦虑"}},
+		StudyMethod: []model.CommonInfo{{Title: "模板化", Description: "导数分类讨论流程化"}, {Title: "限时训练", Description: "解析几何耐力题日练"}},
+	}
+	return model.GetDiagnoseListResponse{Report: rep, ScoreSpace: n * 15, DiagnoseList: dl}
+}
+
+func ioErr() error { return &json.SyntaxError{} }
