@@ -155,6 +155,7 @@ c. [绿灯：保持发挥] (保底分) 对应GetDiagnoseListResponse中第三个
 8. AnalysisTitle: 字符大小不超过10个字
 9. Title中不要包含转义字符
 10. 每个Question中Select的元素不要包含A. B. C. ,仅包含选项描述字符串即可，一定不要出现这种：“A. 最大值为2，x=3”或者“A 最大值为2，x=3”，预期应该输出以下文案：“最大值为2，x=3”，并且CorrectAnswer的值为正确答案的字符串，例如：若selcet中的["x=1","x=2","x=3","x=4"]，则CorrectAnswer的值为"x=3"。
+11. 每个Question只出概念题，不需要出计算题，不带公式或者避免出现特殊符号。
 `
 	prompt := "根据以下图片链接生成诊断结果，必须返回严格JSON，链接列表：" + strings.Join(imgs, ",")
 	payload := map[string]any{
