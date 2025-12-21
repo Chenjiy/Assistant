@@ -14,9 +14,9 @@ type GetDiagnoseListResponse struct {
 	4. 错误原因分类： [概念模糊, 计算粗心, 逻辑断档, 题目理解偏差, 放弃作答]。
 	5. 难度： 0.1-1.0（1.0最难）。
 	输出要求： 仅输出 JSON，确保数据严谨。*/
-	ScoreSpace    int64          `json:"ScoreSpace"`
-	DiagnoseList  []DiagnoseInfo `json:"DiagnoseList"`
-	FinalAnalysis FinalAnalysis  `json:"FinalAnalysis"`
+	ScoreSpace    int64           `json:"ScoreSpace"`
+	DiagnoseList  []DiagnoseInfo  `json:"DiagnoseList"`
+	FinalAnalysis []FinalAnalysis `json:"FinalAnalysis"`
 }
 
 type FinalAnalysis struct {
