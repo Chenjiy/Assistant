@@ -96,7 +96,7 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 对于蓝灯的题目对应的知识点进行大致分类（不超过五类），每一类创建一个DiagnoseInfo元素，将该项元素标记为蓝灯（将DiagnoseInfo中的Status值设置为1，对应蓝灯），并给出每一类知识点的标题（对应DiagnoseInfo中的Title字段），知识点的分析（对应DiagnoseInfo中的Description字段），知识点的掌握度（对应DiagnoseInfo中的Degree字段），这张试卷的该类题目的分数总和（对应DiagnoseInfo中的Score字段），预期学好这个知识点能达到的预期分数（对应DiagnoseInfo中的ExpectScore, 该值一定<=Score的值），将创建的每一类DiagnoseInfo蓝灯元素加入GetDiagnoseListResponse.DiagnoseList中
 对于红灯的题目对应的知识点进行大致分类（不超过五类），标记为红灯（将DiagnoseInfo中的Status值设置为2，对应红灯），并给出每一类知识点的标题（对应DiagnoseInfo中的Title字段），知识点的分析（对应DiagnoseInfo中的Description字段），知识点的掌握度（对应DiagnoseInfo中的Degree字段），这张试卷的该类题目的分数总和（对应DiagnoseInfo中的Score字段），预期学好这个知识点能达到的预期分数（对应DiagnoseInfo中的ExpectScore, 该值一定<=Score的值），将创建的每一类DiagnoseInfo蓝灯元素加入GetDiagnoseListResponse.DiagnoseList中
 对于绿灯的题目对应的知识点进行大致分类（不超过五类），标记为绿灯（将DiagnoseInfo中的Status值设置为3，对应绿灯），并给出每一类知识点的标题（对应DiagnoseInfo中的Title字段），知识点的分析（对应DiagnoseInfo中的Description字段），知识点的掌握度（对应DiagnoseInfo中的Degree字段），这张试卷的该类题目的分数总和（对应DiagnoseInfo中的Score字段），预期学好这个知识点能达到的预期分数（对应DiagnoseInfo中的ExpectScore, 该值一定<=Score的值），将创建的每一类DiagnoseInfo蓝灯元素加入GetDiagnoseListResponse.DiagnoseList中
-最后将DiagnoseInfo中，DiagnoseInfo中的Status为1的元素（蓝灯）中，在Status为1的GetDiagnoseListResponse.DiagnoseList元素中找出Score的值是最大的那项元素，将该项元素的IsDiagnose字段设置为true，其余所有元素的值均为false
+最后从DiagnoseInfo中，DiagnoseInfo中的Status=1的元素（蓝灯）中，在Status为1的GetDiagnoseListResponse.DiagnoseList元素中找出Score的值是最大的那项元素，将该项元素的IsDiagnose字段设置为true，其余所有元素的值均为false
 
 
 任务要求：
@@ -150,7 +150,6 @@ c. [绿灯：保持发挥] (保底分) 对应GetDiagnoseListResponse中第三个
   （注：粗心错误系数小，概念不清系数大）
 4. 生成话术： 为每个灯生成一句简短评价（如“此路不通，暂且绕行”）。
 5. 错误点描述： 针对各种灯下的错题，用一句话总结共性病灶（如：“对全等判定中的‘边角边’条件识别不准”）。
-6. DiagnoseList中每一项的Status，1表示绿灯，2表示蓝灯，3表示红；Degree表示知识点掌握程度，例如：33%；ExpectScore是预期提升分数；IsDiagnose 表示蓝灯中分值最高的为 true，其他均为false
 7. StudyMethod： 从三个方面给出学习建议，例如：概念、计算、心态”。
 8. AnalysisTitle: 字符大小不超过10个字
 9. Title中不要包含转义字符
@@ -215,9 +214,9 @@ c. [绿灯：保持发挥] (保底分) 对应GetDiagnoseListResponse中第三个
 func buildDiagnose(imgs []string) model.GetDiagnoseListResponse {
 	n := int64(len(imgs))
 	dl := []model.DiagnoseInfo{
-		{Title: "全等三角形判定概念", Degree: "70%", Status: 0, ExpectScore: 8, Description: "分析：基础扎实", IsDiagnose: true},
-		{Title: "解析几何综合", Degree: "55%", Status: 1, ExpectScore: 10, Description: "分析：运算耐力不足", IsDiagnose: true},
-		{Title: "导数与函数性质", Degree: "40%", Status: 2, ExpectScore: 12, Description: "分析：分类讨论不完整", IsDiagnose: true},
+		{Title: "全等三角形判定概念", Degree: "70%", Status: 1, ExpectScore: 8, Description: "分析：基础扎实", IsDiagnose: true},
+		{Title: "解析几何综合", Degree: "55%", Status: 2, ExpectScore: 10, Description: "分析：运算耐力不足", IsDiagnose: false},
+		{Title: "导数与函数性质", Degree: "40%", Status: 3, ExpectScore: 12, Description: "分析：分类讨论不完整", IsDiagnose: false},
 	}
 	rep := model.Report{
 		Conclusion:  "总体：基础较好，重点突破计算与逻辑",
