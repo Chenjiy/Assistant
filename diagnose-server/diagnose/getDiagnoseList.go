@@ -185,7 +185,6 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 							},
 						},
 					},
-
 					"required": []string{"Report", "ScoreSpace", "DiagnoseList", "FinalAnalysis"},
 					"definitions": map[string]any{
 						"CommonInfo": map[string]any{

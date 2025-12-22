@@ -1,11 +1,9 @@
 package model
 
-// request
 type GetDiagnoseListRequest struct {
 	ImgLink []string `json:"ImgLink"`
 }
 
-// response
 type GetDiagnoseListResponse struct {
 	ScoreSpace       int64           `json:"ScoreSpace"`       // 为你挖掘到xxx分。【所有蓝灯知识点分值的总和】
 	ReportConclusion string          `json:"ReportConclusion"` // 报告：总体评价 【对用户得分及其水平进行整体分析，定位失分最多的知识点，给出对应建议。最后可以建议用户关注蓝灯知识点。】
