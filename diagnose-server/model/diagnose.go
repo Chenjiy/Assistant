@@ -1,22 +1,45 @@
 package model
 
+// request
 type GetDiagnoseListRequest struct {
-	ImgLink []string `json:"ImgLink" form:"ImgLink"`
+	ImgLink []string `json:"ImgLink"`
 }
 
+// response
 type GetDiagnoseListResponse struct {
-	Report Report `json:"Report"`
-	/* System Prompt:
-	你是一名资深中考数学阅卷专家。请分析上传的试卷图片，识别每道题目的以下信息并以 JSON 格式输出：
-	1. 题目信息： 题号、题型、分值、正确答案。
-	2. 作答情况： 学生答案、得分、正误判断。
-	3. 知识点归属： 必须包含 1-5 级知识点（参考中考数学大纲），例如：几何 -> 三角形 -> 全等三角形 -> 全等三角形判定 -> SSS/SAS。
-	4. 错误原因分类： [概念模糊, 计算粗心, 逻辑断档, 题目理解偏差, 放弃作答]。
-	5. 难度： 0.1-1.0（1.0最难）。
-	输出要求： 仅输出 JSON，确保数据严谨。*/
-	ScoreSpace    int64           `json:"ScoreSpace"`
-	DiagnoseList  []DiagnoseInfo  `json:"DiagnoseList"`
-	FinalAnalysis []FinalAnalysis `json:"FinalAnalysis"`
+	ScoreSpace       int64           `json:"ScoreSpace"`       // 为你挖掘到xxx分。【所有蓝灯知识点分值的总和】
+	ReportConclusion string          `json:"ReportConclusion"` // 报告：总体评价 【对用户得分及其水平进行整体分析，定位失分最多的知识点，给出对应建议。最后可以建议用户关注蓝灯知识点。】
+	AnalysisInfoList []AnalysisInfo  `json:"AnalysisInfoList"` // 分析列表，对应蓝、红、绿的每个知识点以及知识点对应的原题 【蓝灯、红灯、绿灯知识点列表归属至二级知识点展示，展示二级知识点（不超过10字），预计提分值，用户掌握度、对应题号和和题干文本，和分析】
+	DeepDiagnoseList []DeepDiagnose  `json:"DeepDiagnoseList"` // 深度诊断
+	FinalAnalysis    []FinalAnalysis `json:"FinalAnalysis"`    // 最终分析
+}
+
+type AnalysisInfo struct {
+	KnowledgeTitle string          `json:"KnowledgeTitle"` // 知识点类型 注：getDiagnoseExercise使用
+	Degree         string          `json:"Degree"`         // 知识点掌握程度
+	Status         int64           `json:"Status"`         // 知识点掌握度标记 蓝、绿、红
+	ExpectScore    int64           `json:"ExpectScore"`    // 预期分数
+	Description    string          `json:"Description"`    // 知识点分析 getDiagnoseExercise使用
+	Score          string          `json:"Score"`          // 知识点分数
+	OriginProblem  []OriginProblem `json:"OriginProblem"`  // 对应原题列表
+	IsDiagnose     bool            `json:"isDiagnose"`     // 是否进入诊断详情
+}
+
+type OriginProblem struct {
+	ProblemTitle  string // 原始题目
+	ProblemNumber int64  // 原始题号
+}
+
+type DeepDiagnose struct {
+	KSMTitle       string   `json:"Title"`         // KSM深度诊断标题
+	KSMDescription string   `json:"Description"`   // KSM深度诊断描述
+	ProblemNumber  []int64  `json:"ProblemNumber"` // 题号
+	Strategy       Strategy `json:"Strategy"`      // 策略
+}
+
+type Strategy struct {
+	StrategyTitle string `json:"StrategyTitle"` // 策略标题
+	StrategyDesp  string `json:"StrategyDesp"`  // 策略描述
 }
 
 type FinalAnalysis struct {
@@ -27,43 +50,4 @@ type FinalAnalysis struct {
 type AnalysisItem struct {
 	AnalysisItemTitle string `json:"AnalysisItemTitle"`
 	AnalysisItemDesp  string `json:"AnalysisItemDesp"`
-}
-
-type Report struct {
-	Conclusion  string       `json:"Conclusion"`
-	KSMAnalysis []CommonInfo `json:"KSMAnalysis"`
-	StudyMethod []CommonInfo `json:"StudyMethod"`
-}
-
-type CommonInfo struct {
-	Title       string `json:"Title"`
-	Description string `json:"Description"`
-}
-
-type DiagnoseInfo struct {
-	Title       string `json:"Title"`
-	Degree      string `json:"Degree"`
-	Status      int64  `json:"Status"`
-	ExpectScore int64  `json:"ExpectScore"`
-	Description string `json:"Description"`
-	IsDiagnose  bool   `json:"IsDiagnose"`
-	Score       int64  `json:"Score"`
-}
-
-type GetDiagnoseExerciseRequest struct {
-	Title       string `json:"Title"`
-	Description string `json:"Description"`
-}
-
-type GetExerciseResponse struct {
-	Title     string     `json:"Title"`
-	Concepts  string     `json:"Concepts"`
-	WarnInfo  string     `json:"WarnInfo"`
-	Questions []Question `json:"Questions"`
-}
-
-type Question struct {
-	Title         string   `json:"Title"`
-	Select        []string `json:"Select"`
-	CorrectAnswer string   `json:"CorrectAnswer"`
 }

@@ -102,14 +102,21 @@ func getExercise(ctx *gin.Context, request model.GetDiagnoseExerciseRequest) (mo
 }
 
 func buildDiagnoseExercise(req model.GetDiagnoseExerciseRequest) model.GetExerciseResponse {
-	title := req.Title
-	if title == "" {
-		title = "全等三角形判定概念"
-	}
-	qs := []model.Question{
-		{Title: "下列判定中正确的是？", Select: []string{"SSS", "SAS", "ASA", "AAA"}, CorrectAnswer: "SAS"},
-		{Title: "两边及夹角相等可判定全等吗？", Select: []string{"可以", "不可以", "取决于角度", "无法判断"}, CorrectAnswer: "可以"},
-		{Title: "关于解析几何的说法正确的是？", Select: []string{"判别式只用于二次方程", "韦达定理可用于系数关系", "抛物线无焦点", "椭圆离心率恒为1"}, CorrectAnswer: "韦达定理可用于系数关系"},
-	}
-	return model.GetExerciseResponse{Title: title, Concepts: "概念：" + title, WarnInfo: "注意：仔细审题，流程化表达", Questions: qs}
+    title := req.Title
+    if title == "" {
+        title = "全等三角形判定概念"
+    }
+    mk := func(opts []string) []model.Select {
+        out := make([]model.Select, 0, len(opts))
+        for _, s := range opts {
+            out = append(out, model.Select{Parse: s})
+        }
+        return out
+    }
+    qs := []model.Question{
+        {Title: "下列判定中正确的是？", Select: mk([]string{"SSS", "SAS", "ASA", "AAA"}), CorrectAnswer: "SAS"},
+        {Title: "两边及夹角相等可判定全等吗？", Select: mk([]string{"可以", "不可以", "取决于角度", "无法判断"}), CorrectAnswer: "可以"},
+        {Title: "关于解析几何的说法正确的是？", Select: mk([]string{"判别式只用于二次方程", "韦达定理可用于系数关系", "抛物线无焦点", "椭圆离心率恒为1"}), CorrectAnswer: "韦达定理可用于系数关系"},
+    }
+    return model.GetExerciseResponse{GetExerciseList: []model.GetExerciseList{{Title: title, Concepts: "概念：" + title, WarnInfo: "注意：仔细审题，流程化表达", Questions: qs}}}
 }
