@@ -3,11 +3,13 @@ package diagnose
 import (
 	"bytes"
 	"diagnose-server/model"
+	"diagnose-server/utils"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -218,12 +220,39 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 	}
 	defer resp.Body.Close()
 	buf, _ := io.ReadAll(resp.Body)
-	fmt.Println("buf:", string(buf))
-	var diagnoseResp model.GetDiagnoseListResponse
-	if err := json.Unmarshal(buf, &diagnoseResp); err != nil {
+	var aiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string          `json:"content"`
+				Parsed  json.RawMessage `json:"parsed"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(buf, &aiResp); err != nil {
 		return model.GetDiagnoseListResponse{}, err
 	}
-
+	if len(aiResp.Choices) == 0 {
+		return model.GetDiagnoseListResponse{}, ioErr()
+	}
+	var diagnoseResp model.GetDiagnoseListResponse
+	if len(aiResp.Choices[0].Message.Parsed) > 0 {
+		if err := json.Unmarshal(aiResp.Choices[0].Message.Parsed, &diagnoseResp); err != nil {
+			return model.GetDiagnoseListResponse{}, err
+		}
+		return diagnoseResp, nil
+	}
+	content := aiResp.Choices[0].Message.Content
+	if strings.TrimSpace(content) == "" {
+		return model.GetDiagnoseListResponse{}, ioErr()
+	}
+	raw := utils.ExtractJSONFromContent(content)
+	if err := json.Unmarshal([]byte(raw), &diagnoseResp); err != nil {
+		conv, err := convertAIContentToNew(raw)
+		if err != nil {
+			return diagnoseResp, err
+		}
+		return conv, nil
+	}
 	return diagnoseResp, nil
 }
 func ioErr() error { return &json.SyntaxError{} }
@@ -255,4 +284,153 @@ func buildDiagnose(imgs []string) model.GetDiagnoseListResponse {
 		DeepDiagnoseList: deep,
 		FinalAnalysis:    final,
 	}
+}
+
+func convertAIContentToNew(raw string) (model.GetDiagnoseListResponse, error) {
+	var src struct {
+		PaperOverview struct {
+			Title string `json:"title"`
+		} `json:"paper_overview"`
+		QuestionDetails []struct {
+			ID             string `json:"id"`
+			MaxScore       int    `json:"max_score"`
+			ActualScore    int    `json:"actual_score"`
+			KnowledgePoint string `json:"knowledge_point"`
+			MasteryStatus  string `json:"mastery_status"`
+		} `json:"question_details"`
+		KnowledgeMasteryAnalysis []struct {
+			Lamp     string `json:"lamp"`
+			Category string `json:"category"`
+			Analysis string `json:"analysis"`
+		} `json:"knowledge_mastery_analysis"`
+		OverallDiagnosis struct {
+			BlueQuestionsTotalMaxScore int    `json:"blue_questions_total_max_score"`
+			StrategicSuggestion        string `json:"strategic_suggestion"`
+		} `json:"overall_diagnosis"`
+		KSMDeepDiagnosis []struct {
+			ID              string `json:"id"`
+			Dimension       string `json:"dimension"`
+			Analysis        string `json:"analysis"`
+			StrategyTitle   string `json:"strategy_title"`
+			StrategyContent string `json:"strategy_content"`
+		} `json:"ksm_deep_diagnosis"`
+	}
+	if err := json.Unmarshal([]byte(raw), &src); err != nil {
+		return model.GetDiagnoseListResponse{}, err
+	}
+	type key struct {
+		kp     string
+		status string
+	}
+	agg := map[key]struct {
+		max    int
+		actual int
+		ids    []int64
+	}{}
+	for _, q := range src.QuestionDetails {
+		var id64 int64
+		if v, err := strconv.ParseInt(q.ID, 10, 64); err == nil {
+			id64 = v
+		}
+		k := key{kp: q.KnowledgePoint, status: strings.ToLower(q.MasteryStatus)}
+		a := agg[k]
+		a.max += q.MaxScore
+		a.actual += q.ActualScore
+		a.ids = append(a.ids, id64)
+		agg[k] = a
+	}
+	infos := make([]model.AnalysisInfo, 0, len(agg))
+	maxBlueScore := -1
+	maxBlueIdx := -1
+	for k, v := range agg {
+		var status int64
+		switch k.status {
+		case "blue":
+			status = 1
+		case "red":
+			status = 2
+		default:
+			status = 3
+		}
+		deg := "0%"
+		if v.max > 0 {
+			deg = fmt.Sprintf("%d%%", int(float64(v.actual)*100/float64(v.max)))
+		}
+		exp := v.max
+		if status == 1 {
+			exp = int(float64(v.max) * 0.9)
+		} else if status == 2 {
+			exp = int(float64(v.max) * 0.6)
+		} else {
+			exp = 0
+		}
+		op := make([]model.OriginProblem, 0, len(v.ids))
+		for _, id := range v.ids {
+			op = append(op, model.OriginProblem{ProblemTitle: k.kp, ProblemNumber: id})
+		}
+		info := model.AnalysisInfo{KnowledgeTitle: k.kp, Degree: deg, Status: status, ExpectScore: int64(exp), Description: k.kp, Score: fmt.Sprintf("%d", v.max), OriginProblem: op, IsDiagnose: false}
+		infos = append(infos, info)
+	}
+	for i := range infos {
+		if infos[i].Status == 1 {
+			sc, _ := strconv.Atoi(infos[i].Score)
+			if sc > maxBlueScore {
+				maxBlueScore = sc
+				maxBlueIdx = i
+			}
+		}
+	}
+	if maxBlueIdx >= 0 {
+		infos[maxBlueIdx].IsDiagnose = true
+	}
+	deep := make([]model.DeepDiagnose, 0, len(src.KSMDeepDiagnosis))
+	for _, d := range src.KSMDeepDiagnosis {
+		var id64 int64
+		if v, err := strconv.ParseInt(d.ID, 10, 64); err == nil {
+			id64 = v
+		}
+		deep = append(deep, model.DeepDiagnose{KSMTitle: d.Dimension, KSMDescription: d.Analysis, ProblemNumber: []int64{id64}, Strategy: model.Strategy{StrategyTitle: d.StrategyTitle, StrategyDesp: d.StrategyContent}})
+	}
+	var blueCat, redCat, greenCat string
+	var redDesp, greenDesp string
+	for _, a := range src.KnowledgeMasteryAnalysis {
+		switch a.Lamp {
+		case "蓝灯":
+			blueCat = a.Category
+		case "红灯":
+			redCat = a.Category
+			redDesp = a.Analysis
+		case "绿灯":
+			greenCat = a.Category
+			greenDesp = a.Analysis
+		}
+	}
+	fa := []model.FinalAnalysis{
+		{AnalysisTitle: fallback(blueCat, "蓝灯知识点"), AnalysisItem: []model.AnalysisItem{
+			{AnalysisItemTitle: "做模型", AnalysisItemDesp: "建议 15 分钟回顾具体的模型/知识点关系，画出条件与结论的映射。"},
+			{AnalysisItemTitle: "做对题", AnalysisItemDesp: "完成 3 道典型题并写清解题判定条件，标注每步依据。"},
+			{AnalysisItemTitle: "防失误", AnalysisItemDesp: "总结 2 条在草稿本上的具体预防动作，明确易错触发点。"},
+		}},
+		{AnalysisTitle: fallback(redCat, "红灯暂缓"), AnalysisItem: []model.AnalysisItem{{AnalysisItemTitle: "暂缓理由", AnalysisItemDesp: fallback(redDesp, "步骤长、模型不熟，短期投入产出比低，先集中在高性价比点。")}}},
+		{AnalysisTitle: fallback(greenCat, "绿灯保稳"), AnalysisItem: []model.AnalysisItem{{AnalysisItemTitle: "保持发挥", AnalysisItemDesp: fallback(greenDesp, "无需额外刷题，保持节奏即可，关注进度与稳定性。")}}},
+	}
+	scoreSpace := src.OverallDiagnosis.BlueQuestionsTotalMaxScore
+	if scoreSpace >= 28 {
+		scoreSpace = 27
+	}
+	return model.GetDiagnoseListResponse{ScoreSpace: int64(scoreSpace), ReportConclusion: truncate(src.OverallDiagnosis.StrategicSuggestion, 130), AnalysisInfoList: infos, DeepDiagnoseList: deep, FinalAnalysis: fa}, nil
+}
+
+func fallback(s, d string) string {
+	if strings.TrimSpace(s) == "" {
+		return d
+	}
+	return s
+}
+func truncate(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n])
 }

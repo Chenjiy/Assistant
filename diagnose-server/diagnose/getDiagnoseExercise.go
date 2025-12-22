@@ -1,14 +1,14 @@
 package diagnose
 
 import (
-	"bytes"
-	"diagnose-server/model"
-	"encoding/json"
-	"fmt"
-	"github.com/gin-gonic/gin"
-	"io"
-	"net/http"
-	"strings"
+    "bytes"
+    "diagnose-server/model"
+    "diagnose-server/utils"
+    "encoding/json"
+    "github.com/gin-gonic/gin"
+    "io"
+    "net/http"
+    "strings"
 )
 
 func GetDiagnoseExercise(ctx *gin.Context) {
@@ -125,14 +125,81 @@ func getExercise(ctx *gin.Context, request model.GetDiagnoseExerciseRequest) (mo
 	}
 	defer resp.Body.Close()
 
-	buf, _ := io.ReadAll(resp.Body)
-	fmt.Println("buf:", string(buf))
-	var diagnoseResp model.GetExerciseResponse
-	if err := json.Unmarshal(buf, &diagnoseResp); err != nil {
-		return model.GetExerciseResponse{}, err
-	}
+    data, _ := io.ReadAll(resp.Body)
+    var aiResp struct {
+        Choices []struct {
+            Message struct {
+                Content string          `json:"content"`
+                Parsed  json.RawMessage `json:"parsed"`
+            } `json:"message"`
+        } `json:"choices"`
+    }
+    if err := json.Unmarshal(data, &aiResp); err != nil {
+        return model.GetExerciseResponse{}, err
+    }
+    if len(aiResp.Choices) == 0 || (aiResp.Choices[0].Message.Content == "" && len(aiResp.Choices[0].Message.Parsed) == 0) {
+        return model.GetExerciseResponse{}, &json.SyntaxError{}
+    }
 
-	return diagnoseResp, nil
+    var out model.GetExerciseResponse
+    if len(aiResp.Choices[0].Message.Parsed) > 0 {
+        if err := json.Unmarshal(aiResp.Choices[0].Message.Parsed, &out); err != nil {
+            return model.GetExerciseResponse{}, err
+        }
+    } else {
+        raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
+        if err := json.Unmarshal([]byte(raw), &out); err != nil {
+            var old struct {
+                Title     string `json:"Title"`
+                Concepts  string `json:"Concepts"`
+                WarnInfo  string `json:"WarnInfo"`
+                Questions []struct {
+                    Title         string   `json:"Title"`
+                    Select        []string  `json:"Select"`
+                    CorrectAnswer string   `json:"CorrectAnswer"`
+                } `json:"Questions"`
+            }
+            if err2 := json.Unmarshal([]byte(raw), &old); err2 != nil {
+                return model.GetExerciseResponse{}, err
+            }
+            mk := func(opts []string) []model.Select {
+                res := make([]model.Select, 0, len(opts))
+                for _, s := range opts {
+                    res = append(res, model.Select{Parse: s})
+                }
+                return res
+            }
+            qs := make([]model.Question, 0, len(old.Questions))
+            for _, q := range old.Questions {
+                qs = append(qs, model.Question{Title: q.Title, Select: mk(q.Select), CorrectAnswer: q.CorrectAnswer})
+            }
+            out = model.GetExerciseResponse{GetExerciseList: []model.GetExerciseList{{Title: old.Title, Concepts: old.Concepts, WarnInfo: old.WarnInfo, Questions: qs}}}
+        }
+    }
+    derived := deriveExerciseRequestFromContent(aiResp.Choices[0].Message.Content)
+    if len(out.GetExerciseList) > 0 {
+        if strings.TrimSpace(derived.Title) != "" { out.GetExerciseList[0].Title = derived.Title }
+        if strings.TrimSpace(derived.Description) != "" { out.GetExerciseList[0].Concepts = "概念：" + derived.Description }
+    }
+    return out, nil
+}
+
+func deriveExerciseRequestFromContent(content string) model.GetDiagnoseExerciseRequest {
+    raw := utils.ExtractJSONFromContent(content)
+    var simple struct { Title string `json:"Title"`; Description string `json:"Description"` }
+    if err := json.Unmarshal([]byte(raw), &simple); err == nil {
+        return model.GetDiagnoseExerciseRequest{Title: strings.TrimSpace(simple.Title), Description: strings.TrimSpace(simple.Description)}
+    }
+    var diag struct {
+        KnowledgeMasteryAnalysis []struct { Lamp string `json:"lamp"`; Category string `json:"category"`; Analysis string `json:"analysis"` } `json:"knowledge_mastery_analysis"`
+        OverallDiagnosis struct { StrategicSuggestion string `json:"strategic_suggestion"` } `json:"overall_diagnosis"`
+    }
+    if err := json.Unmarshal([]byte(raw), &diag); err == nil {
+        title := ""; desc := strings.TrimSpace(diag.OverallDiagnosis.StrategicSuggestion)
+        for _, a := range diag.KnowledgeMasteryAnalysis { if a.Lamp == "蓝灯" { title = strings.TrimSpace(a.Category); if strings.TrimSpace(a.Analysis) != "" { desc = strings.TrimSpace(a.Analysis) }; break } }
+        return model.GetDiagnoseExerciseRequest{Title: title, Description: desc}
+    }
+    return model.GetDiagnoseExerciseRequest{}
 }
 
 func buildDiagnoseExercise(req model.GetDiagnoseExerciseRequest) model.GetExerciseResponse {
