@@ -40,28 +40,76 @@ func GetDiagnoseExercise(ctx *gin.Context) {
 }
 
 func getExercise(ctx *gin.Context, request model.GetDiagnoseExerciseRequest) (model.GetExerciseResponse, error) {
-	title := request.Title
-	desc := request.Description
-	if title == "" {
-		title = "全等三角形判定概念"
-	}
-	prompt := "根据以下主题与描述生成练习题，必须返回严格JSON。主题：" + title + "；描述：" + desc
+    title := request.Title
+    desc := request.Description
+    if title == "" {
+        title = "全等三角形判定概念"
+    }
+    systemPrompt := "你是中考数学练习生成助手。只生成概念题，不生成计算题；避免公式与特殊符号（禁止 '~','·','#','$','¥'）；选项仅为内容字符串，不能包含 'A.' 'B.' 前缀；'CorrectAnswer' 必须等于选项文本之一。请根据主题与描述生成练习，并严格输出为 GetExerciseResponse。"
+    prompt := "主题：" + title + "；描述：" + desc
 
-	payload := map[string]any{
-		"model": "gemini-3-flash",
-		"messages": []map[string]string{
-			{
-				"role":    "system",
-				"content": "Question只出概念题，不需要出计算题，不带公式或者避免出现特殊符号, 以下符号都不要出现：'~','·'，'#','$','¥'；并且每个Question中Select的元素不要包含A. B. C. ,仅包含选项描述字符串即可，一定不要出现这种：“A. 最大值为2，x=3”或者“A 最大值为2，x=3”，预期应该输出以下文案：“最大值为2，x=3”，并且CorrectAnswer的值为正确答案的字符串，例如：若selcet中的[\"x=1\",\"x=2\",\"x=3\",\"x=4\"]，则CorrectAnswer的值为\"x=3\"。你是一个高中数学练习生成助手。请基于主题与描述生成练习数据，并严格按以下结构体返回JSON：\nstruct GetExerciseResponse {\n    1: string Title\n    2: string Concepts\n    3: string WarnInfo\n    4: list<Question> Questions\n}\n\nstruct Question {\n    1: string Title\n    2: list<string> Select\n    3: string CorrectAnswer\n}",
-			},
-			{
-				"role":    "user",
-				"content": prompt,
-			},
-		},
-	}
+    payload := map[string]any{
+        "model": "gemini-3-flash",
+        "messages": []map[string]string{
+            {
+                "role":    "system",
+                "content": systemPrompt,
+            },
+            {
+                "role":    "user",
+                "content": prompt,
+            },
+        },
+        "response_format": map[string]any{
+            "type": "json_schema",
+            "json_schema": map[string]any{
+                "name":   "GetExerciseResponse",
+                "strict": true,
+                "schema": map[string]any{
+                    "type": "object",
+                    "properties": map[string]any{
+                        "GetExerciseList": map[string]any{
+                            "type": "array",
+                            "items": map[string]any{
+                                "type": "object",
+                                "properties": map[string]any{
+                                    "Title":    map[string]any{"type": "string"},
+                                    "Concepts": map[string]any{"type": "string"},
+                                    "WarnInfo": map[string]any{"type": "string"},
+                                    "Questions": map[string]any{
+                                        "type": "array",
+                                        "items": map[string]any{"$ref": "#/definitions/Question"},
+                                    },
+                                },
+                                "required": []string{"Title", "Concepts", "WarnInfo", "Questions"},
+                            },
+                        },
+                    },
+                    "required": []string{"GetExerciseList"},
+                    "definitions": map[string]any{
+                        "Question": map[string]any{
+                            "type": "object",
+                            "properties": map[string]any{
+                                "Title":         map[string]any{"type": "string"},
+                                "Select":        map[string]any{"type": "array", "items": map[string]any{"$ref": "#/definitions/Select"}},
+                                "CorrectAnswer": map[string]any{"type": "string"},
+                            },
+                            "required": []string{"Title", "Select", "CorrectAnswer"},
+                        },
+                        "Select": map[string]any{
+                            "type": "object",
+                            "properties": map[string]any{
+                                "Parse": map[string]any{"type": "string"},
+                            },
+                            "required": []string{"Parse"},
+                        },
+                    },
+                },
+            },
+        },
+    }
 
-	body, _ := json.Marshal(payload)
+    body, _ := json.Marshal(payload)
 	reqUp, _ := http.NewRequestWithContext(ctx.Request.Context(), "POST", "http://ai-service.tal.com/openai-compatible/v1/chat/completions", bytes.NewReader(body))
 
 	appID := "300000281"
