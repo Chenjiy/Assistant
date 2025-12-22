@@ -3,10 +3,10 @@ package diagnose
 import (
 	"bytes"
 	"diagnose-server/model"
-	"diagnose-server/utils"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -125,28 +125,14 @@ func getExercise(ctx *gin.Context, request model.GetDiagnoseExerciseRequest) (mo
 	}
 	defer resp.Body.Close()
 
-	var aiResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
+	buf, _ := io.ReadAll(resp.Body)
+	fmt.Println("buf:", string(buf))
+	var diagnoseResp model.GetExerciseResponse
+	if err := json.Unmarshal(buf, &diagnoseResp); err != nil {
 		return model.GetExerciseResponse{}, err
 	}
-	if len(aiResp.Choices) == 0 || aiResp.Choices[0].Message.Content == "" {
-		return model.GetExerciseResponse{}, &json.SyntaxError{}
-	}
 
-	raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
-
-	var out model.GetExerciseResponse
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		fmt.Println("解析ai内容为json失败：", err)
-		return model.GetExerciseResponse{}, err
-	}
-	return out, nil
+	return diagnoseResp, nil
 }
 
 func buildDiagnoseExercise(req model.GetDiagnoseExerciseRequest) model.GetExerciseResponse {

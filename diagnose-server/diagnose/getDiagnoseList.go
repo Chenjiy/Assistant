@@ -3,10 +3,10 @@ package diagnose
 import (
 	"bytes"
 	"diagnose-server/model"
-	"diagnose-server/utils"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -217,26 +217,10 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 		return model.GetDiagnoseListResponse{}, err
 	}
 	defer resp.Body.Close()
-	var aiResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
-		return model.GetDiagnoseListResponse{}, err
-	}
-	if len(aiResp.Choices) == 0 || aiResp.Choices[0].Message.Content == "" {
-		return model.GetDiagnoseListResponse{}, ioErr()
-	}
-
-	// 从ai返回的内容中解析json字符串
-	raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
-
+	buf, _ := io.ReadAll(resp.Body)
+	fmt.Println("buf:", string(buf))
 	var diagnoseResp model.GetDiagnoseListResponse
-	if err := json.Unmarshal([]byte(raw), &diagnoseResp); err != nil {
-		fmt.Println("解析ai内容为json失败：", err)
+	if err := json.Unmarshal(buf, &diagnoseResp); err != nil {
 		return model.GetDiagnoseListResponse{}, err
 	}
 
