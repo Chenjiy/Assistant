@@ -55,7 +55,9 @@ func GetDiagnoseList(ctx *gin.Context) {
 
 func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse, error) {
 	// aiRespSet := "返回结果按照下面的结构体返回, type GetDiagnoseListResponse struct {\n\tReport        Report         `json:\"Report\"`\n\tScoreSpace    int64          `json:\"ScoreSpace\"`\n\tDiagnoseList  []DiagnoseInfo `json:\"DiagnoseList\"`\n\tFinalAnalysis []FinalAnalysis  `json:\"FinalAnalysis\"`\n}\n\ntype FinalAnalysis struct {\n\tAnalysisTitle string         `json:\"AnalysisTitle\"`\n\tAnalysisItem  []AnalysisItem `json:\"AnalysisItem\"`\n}\n\ntype AnalysisItem struct {\n\tAnalysisItemTitle string `json:\"AnalysisItemTitle\"`\n\tAnalysisItemDesp  string `json:\"AnalysisItemDesp\"`\n}\n\ntype Report struct {\n\tConclusion  string       `json:\"Conclusion\"`\n\tKSMAnalysis []CommonInfo `json:\"KSMAnalysis\"`\n\tStudyMethod []CommonInfo `json:\"StudyMethod\"`\n}\n\ntype CommonInfo struct {\n\tTitle       string `json:\"Title\"`\n\tDescription string `json:\"Description\"`\n}\n\ntype DiagnoseInfo struct {\n\tTitle       string `json:\"Title\"`\n\tDegree      string `json:\"Degree\"`\n\tStatus      int64  `json:\"Status\"`\n\tExpectScore int64  `json:\"ExpectScore\"`\n\tScore       int64  `json:\"Score\"`\n\tDescription string `json:\"Description\"`\n\tIsDiagnose  bool   `json:\"IsDiagnose\"`\n}\n\ntype GetDiagnoseExerciseRequest struct {\n\tTitle       string `json:\"Title\"`\n\tDescription string `json:\"Description\"`\n}\n\ntype GetExerciseResponse struct {\n\tTitle     string     `json:\"Title\"`\n\tConcepts  string     `json:\"Concepts\"`\n\tWarnInfo  string     `json:\"WarnInfo\"`\n\tQuestions []Question `json:\"Questions\"`\n}\n\ntype Question struct {\n\tTitle         string   `json:\"Title\"`\n\tSelect        []string `json:\"Select\"`\n\tCorrectAnswer string   `json:\"CorrectAnswer\"`\n}"
-	systemPrompt := `1.先获取所有图片中所有题的题目以及对应题号
+	systemPrompt := `
+最后诊断结果格式严格按照以下结构体返回,type GetDiagnoseListResponse struct {\n    ScoreSpace       int64           \n    ReportConclusion string          \n    AnalysisInfoList []AnalysisInfo  \n    DeepDiagnoseList []DeepDiagnose  \n    FinalAnalysis    []FinalAnalysis \n}\n\ntype AnalysisInfo struct {\n    KnowledgeTitle string         \n    Degree         string         \n    Status         int64          \n    ExpectScore    int64          \n    Description    string         \n    Score          string         \n    OriginProblem  []OriginProblem\n    IsDiagnose     bool           \n}\n\ntype OriginProblem struct {\n    ProblemTitle  string \n    ProblemNumber int64  \n}\n\ntype DeepDiagnose struct {\n    KSMTitle       string   \n    KSMDescription string   \n    ProblemNumber  []int64  \n    Strategy       Strategy \n}\n\ntype Strategy struct {\n    StrategyTitle string \n    StrategyDesp  string \n}\n\ntype FinalAnalysis struct {\n    AnalysisTitle string         \n    AnalysisItem  []AnalysisItem \n}\n\ntype AnalysisItem struct {\n    AnalysisItemTitle string \n    AnalysisItemDesp  string \n}
+1.先获取所有图片中所有题的题目以及对应题号
 
 2.你是一位拥有 20 年经验的资深阅卷组长，精通 OCR 视觉识别与手写分值归因。你的首要任务是识别试卷图像中的红色笔迹（RGB 红色通道高亮区域），并根据阅卷习惯判定分值。[红色笔迹优先级协议]：强制过滤：忽略学生蓝/黑色笔迹，仅以红色笔迹作为判定“实得分”的唯一法定依据。全局扫描：首先定位试卷首页上方的“总分区域”（通常有大红字或“/120”字样）。2. 实得分判定逻辑 (Scoring Decision Tree)请按照以下分级逻辑判定每道题的实得分（Score）：A. 判定标志物：对勾 (√)规则：若题号旁有清晰红勾，判定该题为“全对”。分值逻辑：Score = 该题满分 (MaxScore)。注意：即便没有写具体分数，红勾即代表满分。B. 判定标志物：错号 (×) 或 半勾规则：若题号旁有错号或划线，寻找附近的红色手写数字。数字解读：若数字前带“+”：Score = +号后的数值（极少见，通常代表加分）。若仅为独立数字（如题号旁写个“2”）：Score = 该数字（代表本题实得 2 分）。若仅有错号且无数字：Score = 0。分值逻辑：Score = 识别到的红色手写数字。C. 判定标志物：大题总分（圈出的数字）规则：在填空题或解答题区域，若出现被圆圈包围的红字，通常代表该大项的总分。校验：需将该大项下各小题分值求和，与圈出总分进行对齐。3. 数据交叉校验 (Cross-Check Protocol)为防止 AI 幻觉，必须执行以下三层逻辑校验：总分守恒：统计所有小题实得分之和，必须等于（或极度接近）卷头识别到的“用户总得分”。分值合规：任何单题的 Score 严禁超过该题的 MaxScore。最终分析出试卷的每道题的题目以及题目的原分值对应的
 实得分
@@ -66,17 +68,17 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 
 4.结合“二级知识点”和“掌握度”，将符合条件 50%<掌握度<90% 的“二级知识点”标记为蓝灯，将符合条件的 掌握度>90% 的知识点合并为一个知识点并标记为绿灯，将符合条件 掌握度<50% 的所有“二级知识点”合并为一个并标记为红灯
 
-5. 结合试卷的所有题目和“二级知识点”和掌握度和标记，计算出符合标记为蓝灯“二级知识点”的所有题目分值的总分
+5. 结合试卷的所有题目和“二级知识点”和掌握度和标记，计算出符合标记为蓝灯“二级知识点”的所有题目分值的总分，例如12分，对应字段GetDiagnoseListResponse中的ScoreSpace
 
 6. 根据对用户得分及其水平进行整体分析，定位失分最多的知识点，给出对应建议。最后可以建议用户关注蓝灯知识点。
 
-7. 对蓝灯（掌握度 50%-90%）的“二级知识点”进行分析：定位“临门一脚”的问题，归因逻辑：学生有基础，但存在“假懂”或“执行不到位”。分析话术建议：侧重于识别特定模型失误或判定条件遗漏。示例模板：“在 [**题号**] 中反映出你对该性质已建立初步认知，但在实际应用中对边界条件（如：SAS中的夹角要求）识别不准。这种‘差一点就对’的特征使其成为提分 ROI 最高的黄金区。”，并且获取蓝灯的所有原题题目
+7. 对蓝灯（掌握度 50%-90%）的“二级知识点”进行分析：定位“临门一脚”的问题，归因逻辑：学生有基础，但存在“假懂”或“执行不到位”。分析话术建议：侧重于识别特定模型失误或判定条件遗漏。示例模板：“在 [**题号**] 中反映出你对该性质已建立初步认知，但在实际应用中对边界条件（如：SAS中的夹角要求）识别不准。这种‘差一点就对’的特征使其成为提分 ROI 最高的黄金区。”，并且获取蓝灯的所有原题的完整题目和题号，分别对应ProblemTitle和ProblemNumber
 对红灯（掌握度 < 50%）的“二级知识点”进行分析：定位“底层缺失”的问题
-归因逻辑：学生在该模块存在大面积空白，或由于综合度过高导致毫无思路。分析话术建议：侧重于模型迁移能力弱或基础公式完全遗忘，给出“暂缓”的科学依据。示例模板：“在 [**题号**] 等综合题中，你的掌握度较低，主因是多个底层模型（如：圆与相似）的复合关联能力尚未建立。现阶段死磕此类高难度压轴题产出比极低，建议战略性暂避。”并且获取红灯的所有原题题目
+归因逻辑：学生在该模块存在大面积空白，或由于综合度过高导致毫无思路。分析话术建议：侧重于模型迁移能力弱或基础公式完全遗忘，给出“暂缓”的科学依据。示例模板：“在 [**题号**] 等综合题中，你的掌握度较低，主因是多个底层模型（如：圆与相似）的复合关联能力尚未建立。现阶段死磕此类高难度压轴题产出比极低，建议战略性暂避。”并且获取红灯的所有原题的完整题目和题号，分别对应ProblemTitle和ProblemNumber
 对绿灯（掌握度 ≥ 90%）的“二级知识点”进行分析：定位“能力达标”的状态
 归因逻辑：表现极其稳定，已形成自动化反应。
 分析话术建议：侧重于算法稳健、逻辑闭环。
-示例模板：“你在 [**题号**] 展示的解题流程显示，你对该基础概念的提取速度与运算准确率已达标。目前已形成稳定的‘保底分’，无需额外投入刷题，跟进常规进度即可。”并且获取绿灯的所有原题题目
+示例模板：“你在 [**题号**] 展示的解题流程显示，你对该基础概念的提取速度与运算准确率已达标。目前已形成稳定的‘保底分’，无需额外投入刷题，跟进常规进度即可。”并且获取绿灯的所有原题的完整题目和题号，分别对应ProblemTitle和ProblemNumber
 
 8. 需要进行KSM 深度诊断 (证据链分析)，从 K (知识点：侧重于模型识别不准、公式记混、概念边界模糊。)、S (解题技能：侧重于计算跳步、草稿潦草导致看错、逻辑推导不严谨。)、M (学习思维：侧重于压轴题畏难、审题急躁、考场紧张。) 三个维度对错题和试卷卷面书写进行深度闭环分析错因。
 每个维度的输出约束：
@@ -86,7 +88,6 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 内容：提供简单可执行的建议（如费曼学习法、分步检查法、慢想快做）加一句鼓励。
 示例：[KSM 深度诊断] [12] 题属于 K 维度失分。你在全等判定中识别出了边角关系，但对“SSA”不成立的边界条件掌握度仅 60%，导致误选。这是你最容易拿回的黄金分。 解决方法：费曼学习法 建议明天中午尝试向同桌解释清楚 SSA 为什么不能判定全等。讲通了，这 12 分你就稳拿了。
 
-最后诊断结果格式严格按照以下结构体返回,type GetDiagnoseListResponse struct {\n    ScoreSpace       int64           \n    ReportConclusion string          \n    AnalysisInfoList []AnalysisInfo  \n    DeepDiagnoseList []DeepDiagnose  \n    FinalAnalysis    []FinalAnalysis \n}\n\ntype AnalysisInfo struct {\n    KnowledgeTitle string         \n    Degree         string         \n    Status         int64          \n    ExpectScore    int64          \n    Description    string         \n    Score          string         \n    OriginProblem  []OriginProblem\n    IsDiagnose     bool           \n}\n\ntype OriginProblem struct {\n    ProblemTitle  string \n    ProblemNumber int64  \n}\n\ntype DeepDiagnose struct {\n    KSMTitle       string   \n    KSMDescription string   \n    ProblemNumber  []int64  \n    Strategy       Strategy \n}\n\ntype Strategy struct {\n    StrategyTitle string \n    StrategyDesp  string \n}\n\ntype FinalAnalysis struct {\n    AnalysisTitle string         \n    AnalysisItem  []AnalysisItem \n}\n\ntype AnalysisItem struct {\n    AnalysisItemTitle string \n    AnalysisItemDesp  string \n}
 `
 
 	// 3. 构建 User Prompt (仅包含动态数据)
