@@ -1,14 +1,14 @@
 package diagnose
 
 import (
-    "bytes"
-    "diagnose-server/model"
-    "diagnose-server/utils"
-    "encoding/json"
-    "github.com/gin-gonic/gin"
-    "io"
-    "net/http"
-    "strings"
+	"bytes"
+	"diagnose-server/model"
+	"diagnose-server/utils"
+	"encoding/json"
+	"fmt"
+	"github.com/gin-gonic/gin"
+	"net/http"
+	"strings"
 )
 
 func GetDiagnoseExercise(ctx *gin.Context) {
@@ -45,7 +45,7 @@ func getExercise(ctx *gin.Context, request model.GetDiagnoseExerciseRequest) (mo
 	if title == "" {
 		title = "全等三角形判定概念"
 	}
-	systemPrompt := "你是中考数学练习生成助手。只生成概念题，不生成计算题；避免公式与特殊符号（禁止 '~','·','#','$','¥'）；选项仅为内容字符串，不能包含 'A.' 'B.' 前缀；'CorrectAnswer' 必须等于选项文本之一。请根据主题与描述生成练习，并严格输出为 GetExerciseResponse。"
+	systemPrompt := "你是中考数学练习生成助手。只生成概念题，不生成计算题；避免公式与特殊符号（禁止 '~','·','#','$','¥'）；选项仅为内容字符串，不能包含 'A.' 'B.' 前缀；'CorrectAnswer' 必须等于选项文本之一。请根据主题与描述生成练习，并并严格按以下结构体返回JSON：\nstruct GetExerciseResponse {\n    1: string Title\n    2: string Concepts\n    3: string WarnInfo\n    4: list<Question> Questions\n}\n\nstruct Question {\n    1: string Title\n    2: list<string> Select\n    3: string CorrectAnswer\n}"
 	prompt := "主题：" + title + "；描述：" + desc
 
 	payload := map[string]any{
@@ -58,53 +58,6 @@ func getExercise(ctx *gin.Context, request model.GetDiagnoseExerciseRequest) (mo
 			{
 				"role":    "user",
 				"content": prompt,
-			},
-		},
-		"response_format": map[string]any{
-			"type": "json_schema",
-			"json_schema": map[string]any{
-				"name":   "GetExerciseResponse",
-				"strict": true,
-				"schema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"GetExerciseList": map[string]any{
-							"type": "array",
-							"items": map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"Title":    map[string]any{"type": "string"},
-									"Concepts": map[string]any{"type": "string"},
-									"WarnInfo": map[string]any{"type": "string"},
-									"Questions": map[string]any{
-										"type":  "array",
-										"items": map[string]any{"$ref": "#/definitions/Question"},
-									},
-								},
-								"required": []string{"Title", "Concepts", "WarnInfo", "Questions"},
-							},
-						},
-					},
-					"required": []string{"GetExerciseList"},
-					"definitions": map[string]any{
-						"Question": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"Title":         map[string]any{"type": "string"},
-								"Select":        map[string]any{"type": "array", "items": map[string]any{"$ref": "#/definitions/Select"}},
-								"CorrectAnswer": map[string]any{"type": "string"},
-							},
-							"required": []string{"Title", "Select", "CorrectAnswer"},
-						},
-						"Select": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"Parse": map[string]any{"type": "string"},
-							},
-							"required": []string{"Parse"},
-						},
-					},
-				},
 			},
 		},
 	}
@@ -125,81 +78,64 @@ func getExercise(ctx *gin.Context, request model.GetDiagnoseExerciseRequest) (mo
 	}
 	defer resp.Body.Close()
 
-    data, _ := io.ReadAll(resp.Body)
-    var aiResp struct {
-        Choices []struct {
-            Message struct {
-                Content string          `json:"content"`
-                Parsed  json.RawMessage `json:"parsed"`
-            } `json:"message"`
-        } `json:"choices"`
-    }
-    if err := json.Unmarshal(data, &aiResp); err != nil {
-        return model.GetExerciseResponse{}, err
-    }
-    if len(aiResp.Choices) == 0 || (aiResp.Choices[0].Message.Content == "" && len(aiResp.Choices[0].Message.Parsed) == 0) {
-        return model.GetExerciseResponse{}, &json.SyntaxError{}
-    }
+	var aiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
+		return model.GetExerciseResponse{}, err
+	}
+	if len(aiResp.Choices) == 0 || aiResp.Choices[0].Message.Content == "" {
+		return model.GetExerciseResponse{}, &json.SyntaxError{}
+	}
 
-    var out model.GetExerciseResponse
-    if len(aiResp.Choices[0].Message.Parsed) > 0 {
-        if err := json.Unmarshal(aiResp.Choices[0].Message.Parsed, &out); err != nil {
-            return model.GetExerciseResponse{}, err
-        }
-    } else {
-        raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
-        if err := json.Unmarshal([]byte(raw), &out); err != nil {
-            var old struct {
-                Title     string `json:"Title"`
-                Concepts  string `json:"Concepts"`
-                WarnInfo  string `json:"WarnInfo"`
-                Questions []struct {
-                    Title         string   `json:"Title"`
-                    Select        []string  `json:"Select"`
-                    CorrectAnswer string   `json:"CorrectAnswer"`
-                } `json:"Questions"`
-            }
-            if err2 := json.Unmarshal([]byte(raw), &old); err2 != nil {
-                return model.GetExerciseResponse{}, err
-            }
-            mk := func(opts []string) []model.Select {
-                res := make([]model.Select, 0, len(opts))
-                for _, s := range opts {
-                    res = append(res, model.Select{Parse: s})
-                }
-                return res
-            }
-            qs := make([]model.Question, 0, len(old.Questions))
-            for _, q := range old.Questions {
-                qs = append(qs, model.Question{Title: q.Title, Select: mk(q.Select), CorrectAnswer: q.CorrectAnswer})
-            }
-            out = model.GetExerciseResponse{GetExerciseList: []model.GetExerciseList{{Title: old.Title, Concepts: old.Concepts, WarnInfo: old.WarnInfo, Questions: qs}}}
-        }
-    }
-    derived := deriveExerciseRequestFromContent(aiResp.Choices[0].Message.Content)
-    if len(out.GetExerciseList) > 0 {
-        if strings.TrimSpace(derived.Title) != "" { out.GetExerciseList[0].Title = derived.Title }
-        if strings.TrimSpace(derived.Description) != "" { out.GetExerciseList[0].Concepts = "概念：" + derived.Description }
-    }
-    return out, nil
+	raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
+
+	var out model.GetExerciseResponse
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		fmt.Println("解析ai内容为json失败：", err)
+		return model.GetExerciseResponse{}, err
+	}
+	return out, nil
 }
 
 func deriveExerciseRequestFromContent(content string) model.GetDiagnoseExerciseRequest {
-    raw := utils.ExtractJSONFromContent(content)
-    var simple struct { Title string `json:"Title"`; Description string `json:"Description"` }
-    if err := json.Unmarshal([]byte(raw), &simple); err == nil {
-        return model.GetDiagnoseExerciseRequest{Title: strings.TrimSpace(simple.Title), Description: strings.TrimSpace(simple.Description)}
-    }
-    var diag struct {
-        KnowledgeMasteryAnalysis []struct { Lamp string `json:"lamp"`; Category string `json:"category"`; Analysis string `json:"analysis"` } `json:"knowledge_mastery_analysis"`
-        OverallDiagnosis struct { StrategicSuggestion string `json:"strategic_suggestion"` } `json:"overall_diagnosis"`
-    }
-    if err := json.Unmarshal([]byte(raw), &diag); err == nil {
-        title := ""; desc := strings.TrimSpace(diag.OverallDiagnosis.StrategicSuggestion)
-        for _, a := range diag.KnowledgeMasteryAnalysis { if a.Lamp == "蓝灯" { title = strings.TrimSpace(a.Category); if strings.TrimSpace(a.Analysis) != "" { desc = strings.TrimSpace(a.Analysis) }; break } }
-        return model.GetDiagnoseExerciseRequest{Title: title, Description: desc}
-    }
-    return model.GetDiagnoseExerciseRequest{}
+	raw := utils.ExtractJSONFromContent(content)
+	var simple struct {
+		Title       string `json:"Title"`
+		Description string `json:"Description"`
+	}
+	if err := json.Unmarshal([]byte(raw), &simple); err == nil {
+		return model.GetDiagnoseExerciseRequest{Title: strings.TrimSpace(simple.Title), Description: strings.TrimSpace(simple.Description)}
+	}
+	var diag struct {
+		KnowledgeMasteryAnalysis []struct {
+			Lamp     string `json:"lamp"`
+			Category string `json:"category"`
+			Analysis string `json:"analysis"`
+		} `json:"knowledge_mastery_analysis"`
+		OverallDiagnosis struct {
+			StrategicSuggestion string `json:"strategic_suggestion"`
+		} `json:"overall_diagnosis"`
+	}
+	if err := json.Unmarshal([]byte(raw), &diag); err == nil {
+		title := ""
+		desc := strings.TrimSpace(diag.OverallDiagnosis.StrategicSuggestion)
+		for _, a := range diag.KnowledgeMasteryAnalysis {
+			if a.Lamp == "蓝灯" {
+				title = strings.TrimSpace(a.Category)
+				if strings.TrimSpace(a.Analysis) != "" {
+					desc = strings.TrimSpace(a.Analysis)
+				}
+				break
+			}
+		}
+		return model.GetDiagnoseExerciseRequest{Title: title, Description: desc}
+	}
+	return model.GetDiagnoseExerciseRequest{}
 }
 
 func buildDiagnoseExercise(req model.GetDiagnoseExerciseRequest) model.GetExerciseResponse {

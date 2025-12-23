@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -85,7 +84,10 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 策略匹配：
 标题：xxx方法（不超过 10 字）。
 内容：提供简单可执行的建议（如费曼学习法、分步检查法、慢想快做）加一句鼓励。
-示例：[KSM 深度诊断] [12] 题属于 K 维度失分。你在全等判定中识别出了边角关系，但对“SSA”不成立的边界条件掌握度仅 60%，导致误选。这是你最容易拿回的黄金分。 解决方法：费曼学习法 建议明天中午尝试向同桌解释清楚 SSA 为什么不能判定全等。讲通了，这 12 分你就稳拿了。`
+示例：[KSM 深度诊断] [12] 题属于 K 维度失分。你在全等判定中识别出了边角关系，但对“SSA”不成立的边界条件掌握度仅 60%，导致误选。这是你最容易拿回的黄金分。 解决方法：费曼学习法 建议明天中午尝试向同桌解释清楚 SSA 为什么不能判定全等。讲通了，这 12 分你就稳拿了。
+
+最后诊断结果格式严格按照以下结构体返回,type GetDiagnoseListResponse struct {\n    ScoreSpace       int64           \n    ReportConclusion string          \n    AnalysisInfoList []AnalysisInfo  \n    DeepDiagnoseList []DeepDiagnose  \n    FinalAnalysis    []FinalAnalysis \n}\n\ntype AnalysisInfo struct {\n    KnowledgeTitle string         \n    Degree         string         \n    Status         int64          \n    ExpectScore    int64          \n    Description    string         \n    Score          string         \n    OriginProblem  []OriginProblem\n    IsDiagnose     bool           \n}\n\ntype OriginProblem struct {\n    ProblemTitle  string \n    ProblemNumber int64  \n}\n\ntype DeepDiagnose struct {\n    KSMTitle       string   \n    KSMDescription string   \n    ProblemNumber  []int64  \n    Strategy       Strategy \n}\n\ntype Strategy struct {\n    StrategyTitle string \n    StrategyDesp  string \n}\n\ntype FinalAnalysis struct {\n    AnalysisTitle string         \n    AnalysisItem  []AnalysisItem \n}\n\ntype AnalysisItem struct {\n    AnalysisItemTitle string \n    AnalysisItemDesp  string \n}
+`
 
 	// 3. 构建 User Prompt (仅包含动态数据)
 	prompt := fmt.Sprintf("请分析以下试卷图片链接，并严格按照定义的 JSON 结构返回数据：\n%s", strings.Join(imgs, "\n"))
@@ -99,106 +101,6 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 			{
 				"role":    "user",
 				"content": prompt,
-			},
-		},
-		"response_format": map[string]any{
-			"type": "json_schema",
-			"json_schema": map[string]any{
-				"name":   "DiagnoseResponse",
-				"strict": true,
-				"schema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"name":   "DiagnoseResponse",
-						"strict": true,
-						"schema": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"ScoreSpace":       map[string]any{"type": "integer"},
-								"ReportConclusion": map[string]any{"type": "string"},
-								"AnalysisInfoList": map[string]any{
-									"type": "array",
-									"items": map[string]any{
-										"type": "object",
-										"properties": map[string]any{
-											"KnowledgeTitle": map[string]any{"type": "string"},
-											"Degree":         map[string]any{"type": "string"},
-											"Status":         map[string]any{"type": "integer"},
-											"ExpectScore":    map[string]any{"type": "integer"},
-											"Description":    map[string]any{"type": "string"},
-											"Score":          map[string]any{"type": "string"},
-											"OriginProblem":  map[string]any{"type": "array", "items": map[string]any{"$ref": "#/definitions/OriginProblem"}},
-											"isDiagnose":     map[string]any{"type": "boolean"},
-										},
-										"required": []string{"KnowledgeTitle", "Degree", "Status", "ExpectScore", "Description", "Score", "OriginProblem", "isDiagnose"},
-									},
-								},
-								"DeepDiagnoseList": map[string]any{
-									"type": "array",
-									"items": map[string]any{
-										"type": "object",
-										"properties": map[string]any{
-											"Title":         map[string]any{"type": "string"},
-											"Description":   map[string]any{"type": "string"},
-											"ProblemNumber": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
-											"Strategy":      map[string]any{"$ref": "#/definitions/Strategy"},
-										},
-										"required": []string{"Title", "Description", "ProblemNumber", "Strategy"},
-									},
-								},
-								"FinalAnalysis": map[string]any{
-									"type": "array",
-									"items": map[string]any{
-										"type": "object",
-										"properties": map[string]any{
-											"AnalysisTitle": map[string]any{"type": "string"},
-											"AnalysisItem":  map[string]any{"type": "array", "items": map[string]any{"$ref": "#/definitions/AnalysisItem"}},
-										},
-										"required": []string{"AnalysisTitle", "AnalysisItem"},
-									},
-								},
-							},
-							"required": []string{"ScoreSpace", "ReportConclusion", "AnalysisInfoList", "DeepDiagnoseList", "FinalAnalysis"},
-							"definitions": map[string]any{
-								"AnalysisItem": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"AnalysisItemTitle": map[string]any{"type": "string"},
-										"AnalysisItemDesp":  map[string]any{"type": "string"},
-									},
-									"required": []string{"AnalysisItemTitle", "AnalysisItemDesp"},
-								},
-								"OriginProblem": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"ProblemTitle":  map[string]any{"type": "string"},
-										"ProblemNumber": map[string]any{"type": "integer"},
-									},
-									"required": []string{"ProblemTitle", "ProblemNumber"},
-								},
-								"Strategy": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"StrategyTitle": map[string]any{"type": "string"},
-										"StrategyDesp":  map[string]any{"type": "string"},
-									},
-									"required": []string{"StrategyTitle", "StrategyDesp"},
-								},
-							},
-						},
-					},
-					"required": []string{"Report", "ScoreSpace", "DiagnoseList", "FinalAnalysis"},
-					"definitions": map[string]any{
-						"CommonInfo": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"Title":       map[string]any{"type": "string"},
-								"Description": map[string]any{"type": "string"},
-							},
-							"required": []string{"Title", "Description"},
-						},
-					},
-				},
 			},
 		},
 	}
@@ -219,40 +121,29 @@ func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse,
 		return model.GetDiagnoseListResponse{}, err
 	}
 	defer resp.Body.Close()
-	buf, _ := io.ReadAll(resp.Body)
 	var aiResp struct {
 		Choices []struct {
 			Message struct {
-				Content string          `json:"content"`
-				Parsed  json.RawMessage `json:"parsed"`
+				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.Unmarshal(buf, &aiResp); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
 		return model.GetDiagnoseListResponse{}, err
 	}
-	if len(aiResp.Choices) == 0 {
+	if len(aiResp.Choices) == 0 || aiResp.Choices[0].Message.Content == "" {
 		return model.GetDiagnoseListResponse{}, ioErr()
 	}
+
+	// 从ai返回的内容中解析json字符串
+	raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
+
 	var diagnoseResp model.GetDiagnoseListResponse
-	if len(aiResp.Choices[0].Message.Parsed) > 0 {
-		if err := json.Unmarshal(aiResp.Choices[0].Message.Parsed, &diagnoseResp); err != nil {
-			return model.GetDiagnoseListResponse{}, err
-		}
-		return diagnoseResp, nil
-	}
-	content := aiResp.Choices[0].Message.Content
-	if strings.TrimSpace(content) == "" {
-		return model.GetDiagnoseListResponse{}, ioErr()
-	}
-	raw := utils.ExtractJSONFromContent(content)
 	if err := json.Unmarshal([]byte(raw), &diagnoseResp); err != nil {
-		conv, err := convertAIContentToNew(raw)
-		if err != nil {
-			return diagnoseResp, err
-		}
-		return conv, nil
+		fmt.Println("解析ai内容为json失败：", err)
+		return model.GetDiagnoseListResponse{}, err
 	}
+
 	return diagnoseResp, nil
 }
 func ioErr() error { return &json.SyntaxError{} }
