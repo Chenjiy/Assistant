@@ -218,7 +218,10 @@ func getExercise(ctx *gin.Context, request model.GetDiagnoseExerciseRequest) (mo
 	}
 
 	body, _ := json.Marshal(payload)
-	reqUp, _ := http.NewRequestWithContext(ctx.Request.Context(), "POST", "http://ai-service.tal.com/openai-compatible/v1/chat/completions", bytes.NewReader(body))
+	reqUp, err := http.NewRequestWithContext(ctx.Request.Context(), "POST", "http://ai-service.tal.com/openai-compatible/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return model.GetExerciseResponse{}, fmt.Errorf("create request failed: %v", err)
+	}
 
 	appID := "300000281"
 	appKey := "2be1698da309b52eb807e9ac2d6a4ff1"
