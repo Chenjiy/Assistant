@@ -24,8 +24,8 @@ type AnalysisInfo struct {
 }
 
 type OriginProblem struct {
-	ProblemTitle  string // 原始题目
-	ProblemNumber int64  // 原始题号
+	ProblemTitle  string `json:"ProblemTitle"`  // 原始题目
+	ProblemNumber int64  `json:"ProblemNumber"` // 原始题号
 }
 
 type DeepDiagnose struct {

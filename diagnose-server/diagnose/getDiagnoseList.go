@@ -3,326 +3,750 @@ package diagnose
 import (
 	"bytes"
 	"diagnose-server/model"
-	"diagnose-server/utils"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
-	"strconv"
+	"sort"
 	"strings"
 )
 
+// ==========================================
+// Phase 1: 视觉提取层结构体 (Vision Layer)
+// ==========================================
+type RawQuestion struct {
+	ID        int      `json:"id"`
+	No        string   `json:"no"`
+	Txt       string   `json:"txt"`
+	Err       bool     `json:"err"`
+	Score     int      `json:"sc"`
+	MaxScore  int      `json:"max"`
+	Points    []string `json:"pts"` // 标准章节 (用于聚合，如 "方程与不等式")
+	Kt        string   `json:"kt"`  // [新增] 具体细分考点 (如 "判别式"，用于详情展示)
+	Sug       string   `json:"sug"`
+	ErrReason string   `json:"err_reason"`
+}
+
+type Step1Response struct {
+	Paper []RawQuestion `json:"paper"`
+}
+
+// ==========================================
+// Phase 2: 逻辑聚合层结构体 (Logic Layer)
+// ==========================================
+type KnowledgeStat struct {
+	Title       string
+	TotalScore  int
+	TotalMax    int
+	QuestionRef []RawQuestion
+}
+
+// ==========================================
+// Phase 3: 诊断生成层结构体 (Gen Layer)
+// ==========================================
+type Step3Input struct {
+	Stats        []SimpleStat `json:"stats"`
+	TotalScore   int          `json:"total_score"`
+	TotalMax     int          `json:"total_max"`
+	BlueScoreGap int          `json:"blue_score_gap"`
+}
+
+type SimpleStat struct {
+	Name    string   `json:"name"`
+	Lamp    string   `json:"lamp"`
+	Rate    string   `json:"rate"`
+	RefQues []string `json:"ref_ques"`
+}
+
+// [中间态] 用于精准接收 LLM 的 PascalCase 输出
+type Step3OutputLocal struct {
+	Conclusion       string               `json:"Conclusion"`
+	KnowledgeDesc    map[string]string    `json:"KnowledgeDesc"`
+	DeepDiagnoseList []DeepDiagnoseLocal  `json:"DeepDiagnoseList"`
+	FinalAnalysis    []FinalAnalysisLocal `json:"FinalAnalysis"`
+}
+
+type DeepDiagnoseLocal struct {
+	Title         string  `json:"Title"`
+	Description   string  `json:"Description"`
+	ProblemNumber []int64 `json:"ProblemNumber"`
+	Strategy      struct {
+		StrategyTitle string `json:"StrategyTitle"`
+		StrategyDesp  string `json:"StrategyDesp"`
+	} `json:"Strategy"`
+}
+
+type FinalAnalysisLocal struct {
+	AnalysisTitle string `json:"AnalysisTitle"`
+	AnalysisItem  []struct {
+		AnalysisItemTitle string `json:"AnalysisItemTitle"`
+		AnalysisItemDesp  string `json:"AnalysisItemDesp"`
+	} `json:"AnalysisItem"`
+}
+
+// ==========================================
+// 主入口
+// ==========================================
+
 func GetDiagnoseList(ctx *gin.Context) {
 	var req model.GetDiagnoseListRequest
-	ct := ctx.GetHeader("Content-Type")
-	if strings.Contains(ct, "application/json") {
-		b, _ := ctx.GetRawData()
-		if err := json.Unmarshal(b, &req); err != nil {
-			ctx.JSON(400, gin.H{"error": "invalid json"})
-			return
-		}
-	} else if strings.Contains(ct, "application/x-www-form-urlencoded") || strings.Contains(ct, "multipart/form-data") {
-		_ = ctx.Request.ParseForm()
-		arr := ctx.PostFormArray("ImgLink")
-		if len(arr) == 0 {
-			v := ctx.PostForm("ImgLink")
-			if v != "" {
-				arr = strings.Split(v, ",")
-			}
-		}
-		req.ImgLink = arr
-	} else {
-		if err := ctx.ShouldBind(&req); err != nil {
-			b, _ := ctx.GetRawData()
-			if err2 := json.Unmarshal(b, &req); err2 != nil {
-				ctx.JSON(400, gin.H{"error": "invalid json"})
-				return
-			}
-		}
+	if err := bindRequest(ctx, &req); err != nil {
+		ctx.JSON(400, gin.H{"error": "invalid request"})
+		return
 	}
 	if len(req.ImgLink) == 0 {
 		ctx.JSON(400, gin.H{"error": "missing ImgLink"})
 		return
 	}
-	out, err := aiDiagnose(ctx, req.ImgLink)
 
-	// 兜底假数据
+	// 2. Phase 1: 视觉提取 (增加 kt 字段 & 强制清洗 LaTeX & 禁表格)
+	rawPaper, err := step1VisionExtract(ctx, req.ImgLink)
 	if err != nil {
-		out = buildDiagnose(req.ImgLink)
+		fmt.Printf("Step 1 Vision Error: %v\n", err)
+		ctx.JSON(500, gin.H{"error": "AI vision analysis failed", "detail": err.Error()})
+		return
 	}
-	ctx.JSON(200, out)
+
+	// 3. Phase 2: 逻辑聚合 (使用 pts 聚合，kt 透传)
+	aggData, statsMap, step3In := step2LogicAggregate(rawPaper)
+
+	// 4. Phase 3: 生成诊断
+	textResp, err := step3GenerateReport(ctx, step3In)
+	if err != nil {
+		fmt.Printf("Step 3 Gen Error: %v\n", err)
+		textResp = fallbackStep3(step3In)
+	}
+
+	// 5. 组装最终 Response
+	finalResp := assembleFinalResponse(aggData, statsMap, textResp, int64(step3In.BlueScoreGap))
+	
+	ctx.JSON(200, finalResp)
 }
 
-func aiDiagnose(ctx *gin.Context, imgs []string) (model.GetDiagnoseListResponse, error) {
-	// aiRespSet := "返回结果按照下面的结构体返回, type GetDiagnoseListResponse struct {\n\tReport        Report         `json:\"Report\"`\n\tScoreSpace    int64          `json:\"ScoreSpace\"`\n\tDiagnoseList  []DiagnoseInfo `json:\"DiagnoseList\"`\n\tFinalAnalysis []FinalAnalysis  `json:\"FinalAnalysis\"`\n}\n\ntype FinalAnalysis struct {\n\tAnalysisTitle string         `json:\"AnalysisTitle\"`\n\tAnalysisItem  []AnalysisItem `json:\"AnalysisItem\"`\n}\n\ntype AnalysisItem struct {\n\tAnalysisItemTitle string `json:\"AnalysisItemTitle\"`\n\tAnalysisItemDesp  string `json:\"AnalysisItemDesp\"`\n}\n\ntype Report struct {\n\tConclusion  string       `json:\"Conclusion\"`\n\tKSMAnalysis []CommonInfo `json:\"KSMAnalysis\"`\n\tStudyMethod []CommonInfo `json:\"StudyMethod\"`\n}\n\ntype CommonInfo struct {\n\tTitle       string `json:\"Title\"`\n\tDescription string `json:\"Description\"`\n}\n\ntype DiagnoseInfo struct {\n\tTitle       string `json:\"Title\"`\n\tDegree      string `json:\"Degree\"`\n\tStatus      int64  `json:\"Status\"`\n\tExpectScore int64  `json:\"ExpectScore\"`\n\tScore       int64  `json:\"Score\"`\n\tDescription string `json:\"Description\"`\n\tIsDiagnose  bool   `json:\"IsDiagnose\"`\n}\n\ntype GetDiagnoseExerciseRequest struct {\n\tTitle       string `json:\"Title\"`\n\tDescription string `json:\"Description\"`\n}\n\ntype GetExerciseResponse struct {\n\tTitle     string     `json:\"Title\"`\n\tConcepts  string     `json:\"Concepts\"`\n\tWarnInfo  string     `json:\"WarnInfo\"`\n\tQuestions []Question `json:\"Questions\"`\n}\n\ntype Question struct {\n\tTitle         string   `json:\"Title\"`\n\tSelect        []string `json:\"Select\"`\n\tCorrectAnswer string   `json:\"CorrectAnswer\"`\n}"
-	systemPrompt := `
-最后诊断结果格式严格按照以下结构体返回,type GetDiagnoseListResponse struct {\n    ScoreSpace       int64           \n    ReportConclusion string          \n    AnalysisInfoList []AnalysisInfo  \n    DeepDiagnoseList []DeepDiagnose  \n    FinalAnalysis    []FinalAnalysis \n}\n\ntype AnalysisInfo struct {\n    KnowledgeTitle string         \n    Degree         string         \n    Status         int64          \n    ExpectScore    int64          \n    Description    string         \n    Score          string         \n    OriginProblem  []OriginProblem\n    IsDiagnose     bool           \n}\n\ntype OriginProblem struct {\n    ProblemTitle  string \n    ProblemNumber int64  \n}\n\ntype DeepDiagnose struct {\n    KSMTitle       string   \n    KSMDescription string   \n    ProblemNumber  []int64  \n    Strategy       Strategy \n}\n\ntype Strategy struct {\n    StrategyTitle string \n    StrategyDesp  string \n}\n\ntype FinalAnalysis struct {\n    AnalysisTitle string         \n    AnalysisItem  []AnalysisItem \n}\n\ntype AnalysisItem struct {\n    AnalysisItemTitle string \n    AnalysisItemDesp  string \n}
-1.先获取所有图片中所有题的题目以及对应题号
+// ==========================================
+// 辅助函数实现
+// ==========================================
 
-2.你是一位拥有 20 年经验的资深阅卷组长，精通 OCR 视觉识别与手写分值归因。你的首要任务是识别试卷图像中的红色笔迹（RGB 红色通道高亮区域），并根据阅卷习惯判定分值。[红色笔迹优先级协议]：强制过滤：忽略学生蓝/黑色笔迹，仅以红色笔迹作为判定“实得分”的唯一法定依据。全局扫描：首先定位试卷首页上方的“总分区域”（通常有大红字或“/120”字样）。2. 实得分判定逻辑 (Scoring Decision Tree)请按照以下分级逻辑判定每道题的实得分（Score）：A. 判定标志物：对勾 (√)规则：若题号旁有清晰红勾，判定该题为“全对”。分值逻辑：Score = 该题满分 (MaxScore)。注意：即便没有写具体分数，红勾即代表满分。B. 判定标志物：错号 (×) 或 半勾规则：若题号旁有错号或划线，寻找附近的红色手写数字。数字解读：若数字前带“+”：Score = +号后的数值（极少见，通常代表加分）。若仅为独立数字（如题号旁写个“2”）：Score = 该数字（代表本题实得 2 分）。若仅有错号且无数字：Score = 0。分值逻辑：Score = 识别到的红色手写数字。C. 判定标志物：大题总分（圈出的数字）规则：在填空题或解答题区域，若出现被圆圈包围的红字，通常代表该大项的总分。校验：需将该大项下各小题分值求和，与圈出总分进行对齐。3. 数据交叉校验 (Cross-Check Protocol)为防止 AI 幻觉，必须执行以下三层逻辑校验：总分守恒：统计所有小题实得分之和，必须等于（或极度接近）卷头识别到的“用户总得分”。分值合规：任何单题的 Score 严禁超过该题的 MaxScore。最终分析出试卷的每道题的题目以及题目的原分值对应的
-实得分
+func bindRequest(ctx *gin.Context, req *model.GetDiagnoseListRequest) error {
+	ct := ctx.GetHeader("Content-Type")
+	if strings.Contains(ct, "application/json") {
+		return ctx.ShouldBindJSON(req)
+	}
+	_ = ctx.Request.ParseForm()
+	arr := ctx.PostFormArray("ImgLink")
+	if len(arr) == 0 {
+		v := ctx.PostForm("ImgLink")
+		if v != "" {
+			arr = strings.Split(v, ",")
+		}
+	}
+	req.ImgLink = arr
+	return nil
+}
 
-2.对试卷所有题目进行知识点归属：必须包含 1-5 级知识点（参考中考数学大纲），将每道题映射到“二级知识点”（如：一次函数、全等三角形、实数运算）。
+// Step 1: 视觉提取
+func step1VisionExtract(ctx *gin.Context, imgs []string) ([]RawQuestion, error) {
+	// =================================================================================
+	// 核心优化: 
+	// 1. One-Shot 示例: 给出标准 JSON 样例，防止模型画表格。
+	// 2. 字段分离: kt 存细节，pts 存章节。
+	// =================================================================================
+	promptText := `你是一个专业的阅卷助手。这是一套**老师已经用红笔批改过**的试卷。
+请根据试卷上的**印刷体题目**和**手写批改痕迹**提取信息。
 
-3.对每一类“二级知识点”进行掌握度分析，输出案例：70%；掌握度公式：该知识点下所有相关题目的（实得分总和 / 原始分总和）× 100%。
+**！！！严禁输出 Markdown 表格！！！**
+**！！！严禁使用表格符号 '|' ！！！**
+必须按照json_schema格式输出。
 
-4.结合“二级知识点”和“掌握度”，将符合条件 50%<掌握度<90% 的“二级知识点”标记为蓝灯（对应Status的值为1），将符合条件的 掌握度>90% 的知识点合并为一个知识点并标记为绿灯（对应Status的值为3），将符合条件 掌握度<50% 的所有“二级知识点”合并为一个并标记为红灯（对应Status的值为2）
+**核心识别规则**:
+1. **题号**: 找到题目序号。
+2. **得分(sc)**: 找红色手写分数。红钩(√)=满分；红叉(×)=0分；半钩/问号=部分分。
+3. **满分(max)**: 括号内分值。
+4. **错因(err_reason)**: 观察红笔圈画位置，简述错误特征(如"答案被圈出", "计算步骤划掉", "辅助线错误")。
+5. **题干(txt)**: 
+   - 提取前20字。
+   - **特殊要求**: 如果包含数学公式，请尽量使用**纯文本描述**或确保 LaTeX 反斜杠正确转义 (例如用 "\\" 代替 "\")，防止 JSON 解析失败。
+   - 示例: "若根号x有意义..." 而不是 "若 $\sqrt{x}$..."。
 
-5. 结合试卷的所有题目和“二级知识点”和掌握度和标记，计算出符合标记为蓝灯“二级知识点”的所有题目分值的总分，例如12分，对应字段GetDiagnoseListResponse中的ScoreSpace
+6. **知识点(pts) - 强制章节归类**:
+   **pts 数组中只能包含以下 13 个标准章节名称之一** (严禁使用其他词汇，严禁细分)：
+   - "数与式" (含后面名词相关即归为数与式，如实数, 整式, 分式, 二次根式)
+   - "方程与不等式" (含一元一次/二次方程, 方程组, 不等式相关即归为方程与不等式)
+   - "一次函数" (含正比例，一次函数相关即归为一次函数)
+   - "反比例函数" (含反比例函数相关即归为反比例函数)
+   - "二次函数" (含二次函数相关即归为二次函数)
+   - "几何初步与三角形" (含线段, 角, 全等, 等腰, 直角相关即归为几何初步与三角形)
+   - "相似与变换" (含相似, 位似, 平移, 旋转, 折叠相关即归为相似与变换)
+   - "四边形" (含平行四边形, 矩形, 菱形, 正方形相关即归为四边形)
+   - "圆" (含圆相关即归为圆)
+   - "解直角三角形" (含锐角三角函数, 应用相关即归为解直角三角形)
+   - "统计与概率" (含统计与概率相关即归为统计与概率)
+   - "综合实践" (跨章节大题)
 
-6. 根据对用户得分及其水平进行整体分析，定位失分最多的知识点，给出对应建议。最后可以建议用户关注蓝灯知识点。
+**字段要求**:
+- id: Integer
+- no: String
+- txt: String (题干)
+- sc: Integer
+- max: Integer
+- err: Boolean
+- pts: Array<String> (仅限上述13个标准词汇)
+- sug: String
+- err_reason: String
 
-7. 对蓝灯（掌握度 50%-90%）的“二级知识点”进行分析：定位“临门一脚”的问题，归因逻辑：学生有基础，但存在“假懂”或“执行不到位”。分析话术建议：侧重于识别特定模型失误或判定条件遗漏。示例模板：“在 [**题号**] 中反映出你对该性质已建立初步认知，但在实际应用中对边界条件（如：SAS中的夹角要求）识别不准。这种‘差一点就对’的特征使其成为提分 ROI 最高的黄金区。”，并且获取蓝灯的所有原题的完整题目和题号，分别对应ProblemTitle和ProblemNumber
-对红灯（掌握度 < 50%）的“二级知识点”进行分析：定位“底层缺失”的问题
-归因逻辑：学生在该模块存在大面积空白，或由于综合度过高导致毫无思路。分析话术建议：侧重于模型迁移能力弱或基础公式完全遗忘，给出“暂缓”的科学依据。示例模板：“在 [**题号**] 等综合题中，你的掌握度较低，主因是多个底层模型（如：圆与相似）的复合关联能力尚未建立。现阶段死磕此类高难度压轴题产出比极低，建议战略性暂避。”并且获取红灯的所有原题的完整题目和题号，分别对应ProblemTitle和ProblemNumber
-对绿灯（掌握度 ≥ 90%）的“二级知识点”进行分析：定位“能力达标”的状态
-归因逻辑：表现极其稳定，已形成自动化反应。
-分析话术建议：侧重于算法稳健、逻辑闭环。
-示例模板：“你在 [**题号**] 展示的解题流程显示，你对该基础概念的提取速度与运算准确率已达标。目前已形成稳定的‘保底分’，无需额外投入刷题，跟进常规进度即可。”并且获取绿灯的所有原题的完整题目和题号，分别对应ProblemTitle和ProblemNumber
+**输出格式示例 (严格模仿)**:
+{
+  "paper": [
+    {
+      "id": 1,
+      "no": "1",
+      "txt": "若根号x-1有意义...",
+      "sc": 3,
+      "max": 3,
+      "err": false,
+      "pts": ["数与式"],
+      "kt": "二次根式有意义的条件",
+      "sug": "掌握良好。",
+      "err_reason": ""
+    }
+  ]
+}`
 
-8. 需要进行KSM 深度诊断 (证据链分析)，从 K (知识点：侧重于模型识别不准、公式记混、概念边界模糊。)、S (解题技能：侧重于计算跳步、草稿潦草导致看错、逻辑推导不严谨。)、M (学习思维：侧重于压轴题畏难、审题急躁、考场紧张。) 三个维度对错题和试卷卷面书写进行深度闭环分析错因。
-每个维度的输出约束：
-格式约束：题号必须包裹为 [**题号**]。每题分析 40-60 字，解释为什么被划入该灯号。
-策略匹配：
-标题：xxx方法（不超过 10 字）。
-内容：提供简单可执行的建议（如费曼学习法、分步检查法、慢想快做）加一句鼓励。
-示例：[KSM 深度诊断] [12] 题属于 K 维度失分。你在全等判定中识别出了边角关系，但对“SSA”不成立的边界条件掌握度仅 60%，导致误选。这是你最容易拿回的黄金分。 解决方法：费曼学习法 建议明天中午尝试向同桌解释清楚 SSA 为什么不能判定全等。讲通了，这 12 分你就稳拿了。
+	content := []map[string]any{
+		{"type": "text", "text": promptText},
+	}
+	for _, img := range imgs {
+		content = append(content, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]string{"url": img},
+		})
+	}
 
-`
+	jsonSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"paper": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":         map[string]any{"type": "integer"},
+						"no":         map[string]any{"type": "string"},
+						"txt":        map[string]any{"type": "string"},
+						"sc":         map[string]any{"type": "integer"},
+						"max":        map[string]any{"type": "integer"},
+						"err":        map[string]any{"type": "boolean"},
+						"pts":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+						"kt":         map[string]any{"type": "string"},
+						"sug":        map[string]any{"type": "string"},
+						"err_reason": map[string]any{"type": "string"},
+					},
+					"required": []string{"id", "no", "txt", "sc", "max", "err", "pts", "kt", "sug", "err_reason"},
+				},
+			},
+		},
+		"required": []string{"paper"},
+	}
 
-	// 3. 构建 User Prompt (仅包含动态数据)
-	prompt := fmt.Sprintf("请分析以下试卷图片链接，并严格按照定义的 JSON 结构返回数据：\n%s", strings.Join(imgs, "\n"))
-	payload := map[string]any{
-		"model": "gemini-3-flash",
-		"messages": []map[string]string{
+	messages := []map[string]any{
+		{"role": "user", "content": content},
+	}
+
+	fmt.Println(">>> Step 1 Request: Sending images to Vision Model (Force JSON & Dual-Field)...")
+
+	respStr, err := callLLM(ctx, messages, jsonSchema, "gemini-3-flash", 0.1)
+	if err != nil {
+		return nil, err
+	}
+
+	cleanJson := repairJSON(respStr)
+	fmt.Printf("<<< Step 1 Response (Raw):\n%s\n", cleanJson)
+
+	if strings.HasPrefix(cleanJson, "[") {
+		var paper []RawQuestion
+		if err := json.Unmarshal([]byte(cleanJson), &paper); err != nil {
+			return nil, fmt.Errorf("json parse array failed: %v", err)
+		}
+		return paper, nil
+	} else {
+		var resp Step1Response
+		if err := json.Unmarshal([]byte(cleanJson), &resp); err != nil {
+			return nil, fmt.Errorf("json parse object failed: %v", err)
+		}
+		return resp.Paper, nil
+	}
+}
+
+
+// Step 2: 逻辑聚合
+func step2LogicAggregate(paper []RawQuestion) ([]model.AnalysisInfo, map[string]*KnowledgeStat, Step3Input) {
+	stats := make(map[string]*KnowledgeStat)
+	totalScore := 0
+	totalMax := 0
+
+	for _, q := range paper {
+		totalScore += q.Score
+		totalMax += q.MaxScore
+
+		// 聚合逻辑：使用 pts (标准章节) 作为 Key
+		kps := q.Points
+		if len(kps) == 0 {
+			kps = []string{"综合问题"}
+		}
+		kp := kps[0] 
+
+		if _, ok := stats[kp]; !ok {
+			stats[kp] = &KnowledgeStat{Title: kp}
+		}
+		s := stats[kp]
+		s.TotalScore += q.Score
+		s.TotalMax += q.MaxScore
+		s.QuestionRef = append(s.QuestionRef, q)
+	}
+
+	var infos []model.AnalysisInfo
+	var simpleStats []SimpleStat
+	blueScoreGap := 0
+
+	for title, s := range stats {
+		if s.TotalMax == 0 {
+			s.TotalMax = 1
+		}
+		ratio := float64(s.TotalScore) / float64(s.TotalMax)
+
+		var status int64
+		var lampStr string
+
+		if ratio > 0.90 {
+			status = 3
+			lampStr = "绿灯"
+		} else if ratio >= 0.50 {
+			status = 1
+			lampStr = "蓝灯"
+		} else {
+			status = 2
+			lampStr = "红灯"
+		}
+
+		var expect int64
+		if status == 1 {
+			expect = int64(float64(s.TotalMax) * 0.9)
+			blueScoreGap += (s.TotalMax - s.TotalScore)
+		} else if status == 2 {
+			expect = int64(float64(s.TotalMax) * 0.6)
+		} else {
+			expect = int64(s.TotalScore)
+		}
+
+		// 构建 OriginProblem (使用 make 避免 null)
+		originProbs := make([]model.OriginProblem, 0)
+		var refQuesTxts []string
+		
+		for _, q := range s.QuestionRef {
+			// 前端展示：题号 + 题干 (这里可以考虑把 kt 拼进去，但为了保持简洁暂时只用 Txt)
+			originProbs = append(originProbs, model.OriginProblem{
+				ProblemTitle:  q.Txt, // 前端展示题干
+				ProblemNumber: int64(q.ID),
+			})
+
+			// 给 LLM 的上下文：包含【具体考点 kt】，帮助它生成精准诊断
+			detail := fmt.Sprintf("题%s(得%d/%d)-[考点:%s]", q.No, q.Score, q.MaxScore, q.Kt)
+			if q.Err && q.ErrReason != "" {
+				detail += fmt.Sprintf("-[错因:%s]", q.ErrReason)
+			}
+			refQuesTxts = append(refQuesTxts, detail)
+		}
+
+		infos = append(infos, model.AnalysisInfo{
+			KnowledgeTitle: title, // 标准章节名
+			Degree:         fmt.Sprintf("%d%%", int(ratio*100)),
+			Status:         status,
+			ExpectScore:    expect,
+			Score:          fmt.Sprintf("%d", s.TotalMax),
+			OriginProblem:  originProbs,
+			IsDiagnose:     false,
+		})
+
+		simpleStats = append(simpleStats, SimpleStat{
+			Name:    title,
+			Lamp:    lampStr,
+			Rate:    fmt.Sprintf("%d%%", int(ratio*100)),
+			RefQues: refQuesTxts,
+		})
+	}
+
+	// 智能排序
+	sort.Slice(infos, func(i, j int) bool {
+		sI := stats[infos[i].KnowledgeTitle]
+		sJ := stats[infos[j].KnowledgeTitle]
+		ratioI := float64(sI.TotalScore) / float64(sI.TotalMax)
+		ratioJ := float64(sJ.TotalScore) / float64(sJ.TotalMax)
+
+		prioI := getLampPriority(infos[i].Status)
+		prioJ := getLampPriority(infos[j].Status)
+		if prioI != prioJ {
+			return prioI < prioJ
+		}
+
+		if infos[i].Status == 1 {
+			idxI := float64(sI.TotalMax) * ratioI
+			idxJ := float64(sJ.TotalMax) * ratioJ
+			return idxI > idxJ
+		} else if infos[i].Status == 2 {
+			lostI := sI.TotalMax - sI.TotalScore
+			lostJ := sJ.TotalMax - sJ.TotalScore
+			return lostI > lostJ
+		} else {
+			return sI.TotalScore > sJ.TotalScore
+		}
+	})
+
+	if len(infos) > 0 {
+		infos[0].IsDiagnose = true
+	}
+
+	return infos, stats, Step3Input{
+		Stats:        simpleStats,
+		TotalScore:   totalScore,
+		TotalMax:     totalMax,
+		BlueScoreGap: blueScoreGap,
+	}
+}
+
+func getLampPriority(status int64) int {
+	if status == 1 {
+		return 0
+	}
+	if status == 2 {
+		return 1
+	}
+	return 2
+}
+
+// Step 3: 生成报告
+func step3GenerateReport(ctx *gin.Context, input Step3Input) (Step3OutputLocal, error) {
+	inputBytes, _ := json.Marshal(input)
+
+	prompt := fmt.Sprintf(`
+Role: 20年教龄数学特级教师，面对面面批。
+Data: 知识点(标准章节)及**错因细节**: %s
+
+Task: 生成诊断报告。
+Rules:
+1. **Tone**: 去除AI味，用"你"。结合 Data 中的"错因"细节点评。
+2. **KnowledgeDesc**: Key 必须与 stats.name 逐字一致。
+3. **DeepDiagnoseList (数据回溯)**: 
+   - 必须包含 3 条 (K,S,M)。
+   - **ProblemNumber** (必填): 必须从 Data 的 ref_ques 字段中提取对应的纯数字题号。
+   - 例如: ref_ques=["题14(得0/3)..."] -> ProblemNumber=[14]。
+   - **严禁返回 null 或空数组**，必须找到至少一道例题作为证据。
+4. **FinalAnalysis (战略分层 - 严禁缺项)**:
+   必须生成且仅生成3个建议模块，保证**FinalAnalysis**字段长度为3，严格对应数组下标：
+	Task: 请严格按照以下 **JSON 模板** 进行“填空”。
+	**注意**：FinalAnalysis 数组必须严格包含 3 个对象（Index 0, 1, 2），严禁增删或合并。
+
+	**模板要求 (Template)**:
+
+	1. **Index 0 [蓝灯区]**:
+		- 目标: 掌握度 '50%'-'90%' 的模块 (若无，选分数最高的红灯模块)。
+		- 动作(参考): 
+			- "看概念": 建议回顾的具体知识点。
+			- "做对题": 建议做的典型题型。
+			- "防失误": 具体的草稿纸预防动作。
+
+	2. **Index 1 [红灯区]**:
+		- 目标: 掌握度 < 50% 的模块。
+		- 动作(参考): "战略暂缓" (给出理由)。
+
+	3. **Index 2 [绿灯区]**:
+		- 目标: 掌握度 > 90% 的模块 (若无，填"暂无")。
+		- 动作(参考): "保持手感" (给出建议)。
+		Output Schema (Strict PascalCase):
+		{
+			"Conclusion": "...",
+			"KnowledgeDesc": { "方程与不等式": "..." },
+			"DeepDiagnoseList": [ ... ],
+			"FinalAnalysis": [
+				{
+					"AnalysisTitle": "在这里填蓝灯知识点集合(如'方程&几何')", 
+					"AnalysisItem": [
+						{ "AnalysisItemTitle": "看模型", "AnalysisItemDesp": "建议 15 分钟回顾[具体模型]..." },
+						{ "AnalysisItemTitle": "做对题", "AnalysisItemDesp": "建议完成 3 道[具体题型]..." },
+						{ "AnalysisItemTitle": "防失误", "AnalysisItemDesp": "总结 2 条[具体动作]..." }
+					]
+				},
+				{
+					"AnalysisTitle": "在这里填红灯知识点集合", 
+					"AnalysisItem": [ 
+						{ "AnalysisItemTitle": "战略暂缓", "AnalysisItemDesp": "因[具体原因]建议暂缓..." } 
+					]
+				},
+				{
+					"AnalysisTitle": "在这里填绿灯知识点集合", 
+					"AnalysisItem": [ 
+						{ "AnalysisItemTitle": "保持手感", "AnalysisItemDesp": "无需刷题..." } 
+					]
+				}
+			]
+		}
+`, string(inputBytes))
+
+	jsonSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"Conclusion": map[string]any{"type": "string"},
+			"KnowledgeDesc": map[string]any{
+				"type":                 "object",
+				"additionalProperties": map[string]any{"type": "string"},
+			},
+			"DeepDiagnoseList": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"Title":         map[string]any{"type": "string", "enum": []string{"K (Knowledge)", "S (Skill)", "M (Mindset)"}},
+						"Description":   map[string]any{"type": "string"},
+						"ProblemNumber": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+						"Strategy": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"StrategyTitle": map[string]any{"type": "string"},
+								"StrategyDesp":  map[string]any{"type": "string"},
+							},
+							"required": []string{"StrategyTitle", "StrategyDesp"},
+						},
+					},
+					"required": []string{"Title", "Description", "ProblemNumber", "Strategy"},
+				},
+				"minItems": 3,
+				"maxItems": 3,
+			},
+			"FinalAnalysis": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"AnalysisTitle": map[string]any{"type": "string"},
+						"AnalysisItem": map[string]any{
+							"type": "array",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"AnalysisItemTitle": map[string]any{"type": "string"},
+									"AnalysisItemDesp":  map[string]any{"type": "string"},
+								},
+								"required": []string{"AnalysisItemTitle", "AnalysisItemDesp"},
+							},
+						},
+					},
+					"required": []string{"AnalysisTitle", "AnalysisItem"},
+				},
+				"minItems": 3,
+				"maxItems": 3,
+			},
+		},
+		"required": []string{"Conclusion", "KnowledgeDesc", "DeepDiagnoseList", "FinalAnalysis"},
+	}
+
+	messages := []map[string]any{
+		{"role": "user", "content": prompt},
+	}
+
+	fmt.Println(">>> Step 3 Request: Sending stats to Gen Model...")
+
+	respStr, err := callLLM(ctx, messages, jsonSchema, "gemini-3-flash", 0.7)
+	if err != nil {
+		return Step3OutputLocal{}, err
+	}
+
+	cleanJson := repairJSON(respStr)
+	fmt.Printf("<<< Step 3 Response (Raw):\n%s\n", cleanJson)
+
+	var resp Step3OutputLocal
+	if err := json.Unmarshal([]byte(cleanJson), &resp); err != nil {
+		return Step3OutputLocal{}, err
+	}
+	return resp, nil
+}
+
+// 组装最终结果
+func assembleFinalResponse(infos []model.AnalysisInfo, stats map[string]*KnowledgeStat, textResp Step3OutputLocal, scoreSpace int64) model.GetDiagnoseListResponse {
+	for i := range infos {
+		title := infos[i].KnowledgeTitle
+		
+		desc, ok := textResp.KnowledgeDesc[title]
+		if !ok {
+			desc, ok = textResp.KnowledgeDesc[strings.TrimSpace(title)]
+		}
+		if !ok {
+			for k, v := range textResp.KnowledgeDesc {
+				if strings.Contains(k, title) || strings.Contains(title, k) {
+					desc = v
+					ok = true
+					break
+				}
+			}
+		}
+
+		if ok && desc != "" {
+			infos[i].Description = desc
+		} else {
+			if infos[i].Status == 3 {
+				infos[i].Description = "掌握得不错，细节处理很到位。"
+			} else if infos[i].Status == 1 {
+				infos[i].Description = "有提升空间，注意细节问题。"
+			} else {
+				infos[i].Description = "基础薄弱，需要重点攻克。"
+			}
+		}
+	}
+
+	var dList []model.DeepDiagnose
+	for _, d := range textResp.DeepDiagnoseList {
+		dList = append(dList, model.DeepDiagnose{
+			KSMTitle:       d.Title,
+			KSMDescription: d.Description,
+			ProblemNumber:  d.ProblemNumber,
+			Strategy: model.Strategy{
+				StrategyTitle: d.Strategy.StrategyTitle,
+				StrategyDesp:  d.Strategy.StrategyDesp,
+			},
+		})
+	}
+
+	var fList []model.FinalAnalysis
+	for _, f := range textResp.FinalAnalysis {
+		var items []model.AnalysisItem
+		for _, item := range f.AnalysisItem {
+			items = append(items, model.AnalysisItem{
+				AnalysisItemTitle: item.AnalysisItemTitle,
+				AnalysisItemDesp:  item.AnalysisItemDesp,
+			})
+		}
+		fList = append(fList, model.FinalAnalysis{
+			AnalysisTitle: f.AnalysisTitle,
+			AnalysisItem:  items,
+		})
+	}
+
+	return model.GetDiagnoseListResponse{
+		ScoreSpace:       scoreSpace,
+		ReportConclusion: textResp.Conclusion,
+		AnalysisInfoList: infos,
+		DeepDiagnoseList: dList,
+		FinalAnalysis:    fList,
+	}
+}
+
+// 兜底 Step3
+func fallbackStep3(in Step3Input) Step3OutputLocal {
+	defaultProbIDs := []int64{}
+	if len(in.Stats) > 0 && len(in.Stats[0].RefQues) > 0 {
+		defaultProbIDs = []int64{1} 
+	}
+	return Step3OutputLocal{
+		Conclusion:    "阅卷完成。整体看你的基础不错，但部分知识点存在漏洞。特别是蓝灯模块，只要把细节抓起来，分数还有很大提升空间。",
+		KnowledgeDesc: map[string]string{},
+		DeepDiagnoseList: []DeepDiagnoseLocal{
+			{Title: "K (Knowledge)", Description: "概念理解不透彻，公式应用生疏。", ProblemNumber: defaultProbIDs, Strategy: struct{StrategyTitle string `json:"StrategyTitle"`; StrategyDesp string `json:"StrategyDesp"`}{StrategyTitle: "回归课本", StrategyDesp: "重读定义与定理。"}},
+			{Title: "S (Skill)", Description: "计算步骤跳跃，导致无谓失分。", ProblemNumber: defaultProbIDs, Strategy: struct{StrategyTitle string `json:"StrategyTitle"`; StrategyDesp string `json:"StrategyDesp"`}{StrategyTitle: "规范步骤", StrategyDesp: "坚持不跳步运算。"}},
+			{Title: "M (Mindset)", Description: "审题急躁，遗漏关键条件。", ProblemNumber: defaultProbIDs, Strategy: struct{StrategyTitle string `json:"StrategyTitle"`; StrategyDesp string `json:"StrategyDesp"`}{StrategyTitle: "圈画关键词", StrategyDesp: "读题时强制圈画。"}},
+		},
+		FinalAnalysis: []FinalAnalysisLocal{
 			{
-				"role":    "system",
-				"content": systemPrompt,
+				AnalysisTitle: "重点突破模块", // 蓝灯
+				AnalysisItem: []struct{AnalysisItemTitle string `json:"AnalysisItemTitle"`; AnalysisItemDesp string `json:"AnalysisItemDesp"`}{
+					{AnalysisItemTitle: "看模型", AnalysisItemDesp: "建议 15 分钟回顾相关公式推导。"},
+					{AnalysisItemTitle: "做对题", AnalysisItemDesp: "建议完成 3 道典型错题并写清条件。"},
+					{AnalysisItemTitle: "防失误", AnalysisItemDesp: "总结 2 条计算时的预防动作。"},
+				},
 			},
 			{
-				"role":    "user",
-				"content": prompt,
+				AnalysisTitle: "难点暂缓模块", // 红灯
+				AnalysisItem: []struct{AnalysisItemTitle string `json:"AnalysisItemTitle"`; AnalysisItemDesp string `json:"AnalysisItemDesp"`}{
+					{AnalysisItemTitle: "战略暂缓", AnalysisItemDesp: "该模块综合性强，建议暂时跳过。"},
+				},
+			},
+			{
+				AnalysisTitle: "优势保持模块", // 绿灯
+				AnalysisItem: []struct{AnalysisItemTitle string `json:"AnalysisItemTitle"`; AnalysisItemDesp string `json:"AnalysisItemDesp"`}{
+					{AnalysisItemTitle: "保持手感", AnalysisItemDesp: "跟进学校进度即可。"},
+				},
 			},
 		},
 	}
-	// 覆盖 response_format 以匹配最新的 GetDiagnoseListResponse 定义
+}
+
+func repairJSON(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	s = strings.TrimSpace(s)
+	if len(s) == 0 {
+		return s
+	}
+	start := strings.IndexAny(s, "{[")
+	end := strings.LastIndexAny(s, "}]")
+	if start != -1 && end != -1 && end > start {
+		return s[start : end+1]
+	}
+	return s
+}
+
+func callLLM(ctx *gin.Context, messages []map[string]any, schema any, modelName string, temp float64) (string, error) {
+	payload := map[string]any{
+		"model":    modelName,
+		"messages": messages,
+		"response_format": map[string]any{
+			"type": "json_schema",
+			"json_schema": map[string]any{
+				"name":   "response",
+				"strict": true,
+				"schema": schema,
+			},
+		},
+		"temperature": temp,
+	}
 
 	body, _ := json.Marshal(payload)
-	reqUp, _ := http.NewRequestWithContext(ctx.Request.Context(), "POST", "http://ai-service.tal.com/openai-compatible/v1/chat/completions", bytes.NewReader(body))
+	reqUp, _ := http.NewRequestWithContext(ctx.Request.Context(), "POST", "[http://ai-service.tal.com/openai-compatible/v1/chat/completions](http://ai-service.tal.com/openai-compatible/v1/chat/completions)", bytes.NewReader(body))
 
 	appID := "300000281"
 	appKey := "2be1698da309b52eb807e9ac2d6a4ff1"
 	if appID != "" && appKey != "" {
 		reqUp.Header.Set("Authorization", "Bearer "+appID+":"+appKey)
 	}
-
 	reqUp.Header.Set("Content-Type", "application/json")
+
 	resp, err := http.DefaultClient.Do(reqUp)
 	if err != nil {
-		return model.GetDiagnoseListResponse{}, err
+		return "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		buf := new(bytes.Buffer)
+		buf.ReadFrom(resp.Body)
+		return "", fmt.Errorf("provider error (status %d): %s", resp.StatusCode, buf.String())
+	}
+
 	var aiResp struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil {
-		return model.GetDiagnoseListResponse{}, err
+		return "", fmt.Errorf("decode json failed: %v", err)
 	}
-	if len(aiResp.Choices) == 0 || aiResp.Choices[0].Message.Content == "" {
-		return model.GetDiagnoseListResponse{}, ioErr()
-	}
-
-	// 从ai返回的内容中解析json字符串
-	raw := utils.ExtractJSONFromContent(aiResp.Choices[0].Message.Content)
-
-	var diagnoseResp model.GetDiagnoseListResponse
-	if err := json.Unmarshal([]byte(raw), &diagnoseResp); err != nil {
-		fmt.Println("解析ai内容为json失败：", err)
-		return model.GetDiagnoseListResponse{}, err
+	if len(aiResp.Choices) == 0 {
+		return "", fmt.Errorf("empty response")
 	}
 
-	return diagnoseResp, nil
-}
-func ioErr() error { return &json.SyntaxError{} }
-
-func buildDiagnose(imgs []string) model.GetDiagnoseListResponse {
-	infos := []model.AnalysisInfo{
-		{KnowledgeTitle: "全等判定", Degree: "75%", Status: 1, ExpectScore: 6, Description: "判定条件识别不牢固，易在边角边与边边边混淆", Score: "6", OriginProblem: []model.OriginProblem{{ProblemTitle: "全等三角形判定", ProblemNumber: 12}}, IsDiagnose: true},
-		{KnowledgeTitle: "二次函数图像", Degree: "42%", Status: 2, ExpectScore: 5, Description: "读图与性质套用不熟，顶点坐标与对称轴易错", Score: "5", OriginProblem: []model.OriginProblem{{ProblemTitle: "二次函数图像阅读", ProblemNumber: 18}}, IsDiagnose: false},
-		{KnowledgeTitle: "基础计算", Degree: "95%", Status: 3, ExpectScore: 0, Description: "保持稳定发挥，按既有节奏作答即可", Score: "0", OriginProblem: []model.OriginProblem{{ProblemTitle: "分式运算", ProblemNumber: 3}}, IsDiagnose: false},
-	}
-	deep := []model.DeepDiagnose{
-		{KSMTitle: "K (Knowledge)", KSMDescription: "概念边界未清晰，关键判定语义混淆，易造成误判。", ProblemNumber: []int64{12}, Strategy: model.Strategy{StrategyTitle: "概念回扫", StrategyDesp: "用费曼学习法复述判定条件，校对关键字。"}},
-		{KSMTitle: "S (Skill)", KSMDescription: "演算存在跳步与漏写，草稿不成体系，导致细节丢分。", ProblemNumber: []int64{18}, Strategy: model.Strategy{StrategyTitle: "分步检查", StrategyDesp: "每写三行停 2 秒核对符号与数字。"}},
-		{KSMTitle: "M (Mindset)", KSMDescription: "遇长题急于求成，审题未充分，压力下判断失准。", ProblemNumber: []int64{}, Strategy: model.Strategy{StrategyTitle: "审题减速", StrategyDesp: "先写下“这题我先不求快”，按读—划—列执行。"}},
-	}
-	final := []model.FinalAnalysis{
-		{AnalysisTitle: "全等三角形&几何", AnalysisItem: []model.AnalysisItem{
-			{AnalysisItemTitle: "做模型", AnalysisItemDesp: "建议 15 分钟回顾具体的模型/知识点关系，画出条件与结论的映射。"},
-			{AnalysisItemTitle: "做对题", AnalysisItemDesp: "完成 3 道典型题并写清解题判定条件，标注每步依据。"},
-			{AnalysisItemTitle: "防失误", AnalysisItemDesp: "总结 2 条在草稿本上的具体预防动作，明确易错触发点。"},
-		}},
-		{AnalysisTitle: "立体几何&暂缓", AnalysisItem: []model.AnalysisItem{{AnalysisItemTitle: "暂缓理由", AnalysisItemDesp: "步骤长、模型不熟，短期投入产出比低，先集中在高性价比点。"}}},
-		{AnalysisTitle: "基础计算&保稳", AnalysisItem: []model.AnalysisItem{{AnalysisItemTitle: "保持发挥", AnalysisItemDesp: "无需额外刷题，保持节奏即可，关注进度与稳定性。"}}},
-	}
-	return model.GetDiagnoseListResponse{
-		ScoreSpace:       12,
-		ReportConclusion: "整体状态稳中有升，建议把练习时间集中在熟悉度较高但仍可提分的板块，先以模型回顾和判定条件梳理为主，穿插短时巩固，避免拉长战线导致注意力涣散。",
-		AnalysisInfoList: infos,
-		DeepDiagnoseList: deep,
-		FinalAnalysis:    final,
-	}
-}
-
-func convertAIContentToNew(raw string) (model.GetDiagnoseListResponse, error) {
-	var src struct {
-		PaperOverview struct {
-			Title string `json:"title"`
-		} `json:"paper_overview"`
-		QuestionDetails []struct {
-			ID             string `json:"id"`
-			MaxScore       int    `json:"max_score"`
-			ActualScore    int    `json:"actual_score"`
-			KnowledgePoint string `json:"knowledge_point"`
-			MasteryStatus  string `json:"mastery_status"`
-		} `json:"question_details"`
-		KnowledgeMasteryAnalysis []struct {
-			Lamp     string `json:"lamp"`
-			Category string `json:"category"`
-			Analysis string `json:"analysis"`
-		} `json:"knowledge_mastery_analysis"`
-		OverallDiagnosis struct {
-			BlueQuestionsTotalMaxScore int    `json:"blue_questions_total_max_score"`
-			StrategicSuggestion        string `json:"strategic_suggestion"`
-		} `json:"overall_diagnosis"`
-		KSMDeepDiagnosis []struct {
-			ID              string `json:"id"`
-			Dimension       string `json:"dimension"`
-			Analysis        string `json:"analysis"`
-			StrategyTitle   string `json:"strategy_title"`
-			StrategyContent string `json:"strategy_content"`
-		} `json:"ksm_deep_diagnosis"`
-	}
-	if err := json.Unmarshal([]byte(raw), &src); err != nil {
-		return model.GetDiagnoseListResponse{}, err
-	}
-	type key struct {
-		kp     string
-		status string
-	}
-	agg := map[key]struct {
-		max    int
-		actual int
-		ids    []int64
-	}{}
-	for _, q := range src.QuestionDetails {
-		var id64 int64
-		if v, err := strconv.ParseInt(q.ID, 10, 64); err == nil {
-			id64 = v
-		}
-		k := key{kp: q.KnowledgePoint, status: strings.ToLower(q.MasteryStatus)}
-		a := agg[k]
-		a.max += q.MaxScore
-		a.actual += q.ActualScore
-		a.ids = append(a.ids, id64)
-		agg[k] = a
-	}
-	infos := make([]model.AnalysisInfo, 0, len(agg))
-	maxBlueScore := -1
-	maxBlueIdx := -1
-	for k, v := range agg {
-		var status int64
-		switch k.status {
-		case "blue":
-			status = 1
-		case "red":
-			status = 2
-		default:
-			status = 3
-		}
-		deg := "0%"
-		if v.max > 0 {
-			deg = fmt.Sprintf("%d%%", int(float64(v.actual)*100/float64(v.max)))
-		}
-		exp := v.max
-		if status == 1 {
-			exp = int(float64(v.max) * 0.9)
-		} else if status == 2 {
-			exp = int(float64(v.max) * 0.6)
-		} else {
-			exp = 0
-		}
-		op := make([]model.OriginProblem, 0, len(v.ids))
-		for _, id := range v.ids {
-			op = append(op, model.OriginProblem{ProblemTitle: k.kp, ProblemNumber: id})
-		}
-		info := model.AnalysisInfo{KnowledgeTitle: k.kp, Degree: deg, Status: status, ExpectScore: int64(exp), Description: k.kp, Score: fmt.Sprintf("%d", v.max), OriginProblem: op, IsDiagnose: false}
-		infos = append(infos, info)
-	}
-	for i := range infos {
-		if infos[i].Status == 1 {
-			sc, _ := strconv.Atoi(infos[i].Score)
-			if sc > maxBlueScore {
-				maxBlueScore = sc
-				maxBlueIdx = i
-			}
-		}
-	}
-	if maxBlueIdx >= 0 {
-		infos[maxBlueIdx].IsDiagnose = true
-	}
-	deep := make([]model.DeepDiagnose, 0, len(src.KSMDeepDiagnosis))
-	for _, d := range src.KSMDeepDiagnosis {
-		var id64 int64
-		if v, err := strconv.ParseInt(d.ID, 10, 64); err == nil {
-			id64 = v
-		}
-		deep = append(deep, model.DeepDiagnose{KSMTitle: d.Dimension, KSMDescription: d.Analysis, ProblemNumber: []int64{id64}, Strategy: model.Strategy{StrategyTitle: d.StrategyTitle, StrategyDesp: d.StrategyContent}})
-	}
-	var blueCat, redCat, greenCat string
-	var redDesp, greenDesp string
-	for _, a := range src.KnowledgeMasteryAnalysis {
-		switch a.Lamp {
-		case "蓝灯":
-			blueCat = a.Category
-		case "红灯":
-			redCat = a.Category
-			redDesp = a.Analysis
-		case "绿灯":
-			greenCat = a.Category
-			greenDesp = a.Analysis
-		}
-	}
-	fa := []model.FinalAnalysis{
-		{AnalysisTitle: fallback(blueCat, "蓝灯知识点"), AnalysisItem: []model.AnalysisItem{
-			{AnalysisItemTitle: "做模型", AnalysisItemDesp: "建议 15 分钟回顾具体的模型/知识点关系，画出条件与结论的映射。"},
-			{AnalysisItemTitle: "做对题", AnalysisItemDesp: "完成 3 道典型题并写清解题判定条件，标注每步依据。"},
-			{AnalysisItemTitle: "防失误", AnalysisItemDesp: "总结 2 条在草稿本上的具体预防动作，明确易错触发点。"},
-		}},
-		{AnalysisTitle: fallback(redCat, "红灯暂缓"), AnalysisItem: []model.AnalysisItem{{AnalysisItemTitle: "暂缓理由", AnalysisItemDesp: fallback(redDesp, "步骤长、模型不熟，短期投入产出比低，先集中在高性价比点。")}}},
-		{AnalysisTitle: fallback(greenCat, "绿灯保稳"), AnalysisItem: []model.AnalysisItem{{AnalysisItemTitle: "保持发挥", AnalysisItemDesp: fallback(greenDesp, "无需额外刷题，保持节奏即可，关注进度与稳定性。")}}},
-	}
-	scoreSpace := src.OverallDiagnosis.BlueQuestionsTotalMaxScore
-	if scoreSpace >= 28 {
-		scoreSpace = 27
-	}
-	return model.GetDiagnoseListResponse{ScoreSpace: int64(scoreSpace), ReportConclusion: truncate(src.OverallDiagnosis.StrategicSuggestion, 130), AnalysisInfoList: infos, DeepDiagnoseList: deep, FinalAnalysis: fa}, nil
-}
-
-func fallback(s, d string) string {
-	if strings.TrimSpace(s) == "" {
-		return d
-	}
-	return s
-}
-func truncate(s string, n int) string {
-	r := []rune(strings.TrimSpace(s))
-	if len(r) <= n {
-		return string(r)
-	}
-	return string(r[:n])
+	return aiResp.Choices[0].Message.Content, nil
 }

@@ -25,5 +25,5 @@ type Question struct {
 }
 
 type Select struct {
-	Parse string
+	Parse string `json:"Parse"`
 }
