@@ -254,7 +254,7 @@ func step1VisionExtract(ctx *gin.Context, imgs []string) ([]RawQuestion, error) 
 
 	fmt.Println(">>> Step 1 Request: Sending images to Vision Model (Force JSON & Dual-Field)...")
 
-	respStr, err := callLLM(ctx, messages, jsonSchema, "gemini-3-flash", 0.1)
+	respStr, err := callLLM(ctx, messages, jsonSchema, "gemini-3-flash", 0.2)
 	if err != nil {
 		return nil, err
 	}
@@ -277,8 +277,8 @@ func step1VisionExtract(ctx *gin.Context, imgs []string) ([]RawQuestion, error) 
 	}
 }
 
-
 // Step 2: 逻辑聚合
+// 修改建议: 在 ref_ques 中增加显式的 [CORRECT]/[ERROR] 标记，辅助 Step 3 识别
 func step2LogicAggregate(paper []RawQuestion) ([]model.AnalysisInfo, map[string]*KnowledgeStat, Step3Input) {
 	stats := make(map[string]*KnowledgeStat)
 	totalScore := 0
@@ -287,14 +287,11 @@ func step2LogicAggregate(paper []RawQuestion) ([]model.AnalysisInfo, map[string]
 	for _, q := range paper {
 		totalScore += q.Score
 		totalMax += q.MaxScore
-
-		// 聚合逻辑：使用 pts (标准章节) 作为 Key
 		kps := q.Points
 		if len(kps) == 0 {
 			kps = []string{"综合问题"}
 		}
 		kp := kps[0] 
-
 		if _, ok := stats[kp]; !ok {
 			stats[kp] = &KnowledgeStat{Title: kp}
 		}
@@ -317,6 +314,7 @@ func step2LogicAggregate(paper []RawQuestion) ([]model.AnalysisInfo, map[string]
 		var status int64
 		var lampStr string
 
+		// 判定灯色
 		if ratio > 0.90 {
 			status = 3
 			lampStr = "绿灯"
@@ -341,7 +339,7 @@ func step2LogicAggregate(paper []RawQuestion) ([]model.AnalysisInfo, map[string]
 		// 构建 OriginProblem (使用 make 避免 null)
 		originProbs := make([]model.OriginProblem, 0)
 		var refQuesTxts []string
-		
+
 		for _, q := range s.QuestionRef {
 			// 前端展示：题号 + 题干 (这里可以考虑把 kt 拼进去，但为了保持简洁暂时只用 Txt)
 			originProbs = append(originProbs, model.OriginProblem{
@@ -349,8 +347,16 @@ func step2LogicAggregate(paper []RawQuestion) ([]model.AnalysisInfo, map[string]
 				ProblemNumber: int64(q.ID),
 			})
 
-			// 给 LLM 的上下文：包含【具体考点 kt】，帮助它生成精准诊断
-			detail := fmt.Sprintf("题%s(得%d/%d)-[考点:%s]", q.No, q.Score, q.MaxScore, q.Kt)
+	// 给 LLM 的上下文：包含【具体考点 kt】，帮助它生成精准诊断
+
+			// [优化点]：增加 [CORRECT] 或 [ERROR] 标记，方便 Step 3 过滤
+			statusTag := "[CORRECT]"
+			if q.Score < q.MaxScore {
+				statusTag = "[ERROR]"
+			}
+
+			// 组装详细信息供 AI 参考
+			detail := fmt.Sprintf("%s 题%s(得%d/%d)-[考点:%s]", statusTag, q.No, q.Score, q.MaxScore, q.Kt)
 			if q.Err && q.ErrReason != "" {
 				detail += fmt.Sprintf("-[错因:%s]", q.ErrReason)
 			}
@@ -387,7 +393,6 @@ func step2LogicAggregate(paper []RawQuestion) ([]model.AnalysisInfo, map[string]
 		if prioI != prioJ {
 			return prioI < prioJ
 		}
-
 		if infos[i].Status == 1 {
 			idxI := float64(sI.TotalMax) * ratioI
 			idxJ := float64(sJ.TotalMax) * ratioJ
@@ -422,7 +427,6 @@ func getLampPriority(status int64) int {
 	}
 	return 2
 }
-
 // Step 3: 生成报告
 func step3GenerateReport(ctx *gin.Context, input Step3Input) (Step3OutputLocal, error) {
 	inputBytes, _ := json.Marshal(input)
@@ -431,38 +435,64 @@ func step3GenerateReport(ctx *gin.Context, input Step3Input) (Step3OutputLocal, 
 Role: 20年教龄数学特级教师，面对面面批。
 Data: 知识点(标准章节)及**错因细节**: %s
 
-Task: 生成诊断报告。
-Rules:
-1. **Tone**: 去除AI味，用"你"。结合 Data 中的"错因"细节点评。
-2. **KnowledgeDesc**: Key 必须与 stats.name 逐字一致。
-3. **DeepDiagnoseList (数据回溯)**: 
-   - 必须包含 3 条 (K,S,M)。
-   - **ProblemNumber** (必填): 必须从 Data 的 ref_ques 字段中提取对应的纯数字题号。
-   - 例如: ref_ques=["题14(得0/3)..."] -> ProblemNumber=[14]。
-   - **严禁返回 null 或空数组**，必须找到至少一道例题作为证据。
-4. **FinalAnalysis (战略分层 - 严禁缺项)**:
-   必须生成且仅生成3个建议模块，保证**FinalAnalysis**字段长度为3，严格对应数组下标：
-	Task: 请严格按照以下 **JSON 模板** 进行“填空”。
-	**注意**：FinalAnalysis 数组必须严格包含 3 个对象（Index 0, 1, 2），严禁增删或合并。
+Task: 根据 Data 生成诊断报告 (JSON 格式)。
 
-	**模板要求 (Template)**:
+**CRITICAL RULES (核心规则 - 必须严格遵守)**:
 
-	1. **Index 0 [蓝灯区]**:
-		- 目标: 掌握度 '50%'-'90%' 的模块 (若无，选分数最高的红灯模块)。
-		- 动作(参考): 
-			- "看概念": 建议回顾的具体知识点。
-			- "做对题": 建议做的典型题型。
-			- "防失误": 具体的草稿纸预防动作。
+1. **结构强制 (Fix JSON Error)**:
+   - **DeepDiagnoseList 中的 Strategy 字段必须是对象 (Object)**。
+   - 格式必须为: {"StrategyTitle": "简短小标题", "StrategyDesp": "详细建议内容"}。
+   - **严禁**将 Strategy 输出为字符串 (String)。
+   - 错误示例: "Strategy": "建议回归课本..."
+   - 正确示例: "Strategy": {"StrategyTitle": "回归课本", "StrategyDesp": "建议重读定义..."}
+	 - **ProblemNumber 必须是纯整数数组**: 
+     - 正确: [1, 2, 3]
+     - 错误: "1, 2" (字符串)
+     - 错误: ["1", "2"] (字符串数组)
+     - 错误: "暂无" (文字)
 
-	2. **Index 1 [红灯区]**:
-		- 目标: 掌握度 < 50% 的模块。
-		- 动作(参考): "战略暂缓" (给出理由)。
+2. **JSON 安全性**:
+   - 严禁使用未转义的反斜杠。严禁输出 LaTeX 公式（如 \Delta）。
+   - 请使用纯中文描述（如 "判别式"）。
 
-	3. **Index 2 [绿灯区]**:
-		- 目标: 掌握度 > 90% 的模块 (若无，填"暂无")。
-		- 动作(参考): "保持手感" (给出建议)。
-		Output Schema (Strict PascalCase):
-		{
+3. **错题判定逻辑**:
+   - 扫描 Data.RefQues，只有标记为 **[ERROR]** 或 **得分 < 满分** 的题目才是"错题"。
+   - **[CORRECT] / 满分题目**: 视为学生已掌握。**严禁**在 KSM 分析中将其作为"问题"进行归因。
+
+4. **KSM 深度诊断 (Must Fill)**:
+   - DeepDiagnoseList 必须包含 3 条 (Title: "K (Knowledge)", "S (Skill)", "M (Mindset)")。
+   - **如果该维度有错题**: ProblemNumber 填错题 ID，Description 写错因。
+   - **如果该维度全对 (无错题)**: 
+     - Description: 填写正面评价（如"概念清晰，基础扎实"）。
+     - ProblemNumber: **必须**填入一个满分题的 ID 作为证据 (Data中有 ID)。**严禁为空数组**。
+     - Strategy: 填写"进阶建议"或"保持手感"。
+5. **FinalAnalysis (战略分层 - 强制填充逻辑)**:
+   你必须生成一个包含 3 个对象的数组，分别对应 [蓝灯区, 红灯区, 绿灯区]。
+   **执行逻辑**:
+   - **Step A (聚合)**: 遍历 Data.Stats，按 "lamp" 字段将知识点分组。
+   - **Step B (生成)**:
+     - **Index 0 (蓝灯区 - 高性价比点)**: 
+       - **IF 有蓝灯模块**: 
+         - AnalysisTitle: 提取模块名的抽象集合(如"全等&几何")，**强制10字以内**。
+         - AnalysisItem (必须严格生成以下3条):
+           1. Title="看模型", Desp="建议 15 分钟回顾[具体模型名称]及判定条件。"
+           2. Title="做对题", Desp="建议完成 3 道[典型题型]并写清解题判定条件。"
+           3. Title="防失误", Desp="总结 2 条[具体错误]的草稿本预防动作。"
+       - **ELSE 无蓝灯模块**: AnalysisTitle="提分潜力区", AnalysisItem=[{"AnalysisItemTitle":"暂无蓝灯项", "AnalysisItemDesp":"当前无处于波动期的知识点，请关注红灯区或保持绿灯优势。"}]
+     
+     - **Index 1 (红灯区 - 建议放弃)**: 
+       - **IF 有红灯模块**: 
+         - AnalysisTitle: 提取模块名的抽象集合，**强制10字以内**。
+         - AnalysisItem: [{"AnalysisItemTitle":"战略暂缓", "AnalysisItemDesp":"因[步骤长/模型不熟/得分不稳定]建议暂缓，优先保证基础分。"}]
+       - **ELSE 无红灯模块**: AnalysisTitle="难点攻克区", AnalysisItem=[{"AnalysisItemTitle":"表现优秀", "AnalysisItemDesp":"无薄弱红灯项，基础非常扎实！"}]
+
+     - **Index 2 (绿灯区 - 保持发挥)**: 
+       - **IF 有绿灯模块**: 
+         - AnalysisTitle: 提取模块名的抽象集合，**强制10字以内**。
+         - AnalysisItem: [{"AnalysisItemTitle":"保持手感", "AnalysisItemDesp":"总结 1 条[具体原因]，无需额外刷题，跟进学校进度即可。"}]
+       - **ELSE 无绿灯模块**: AnalysisTitle="优势保持区", AnalysisItem=[{"AnalysisItemTitle":"继续努力", "AnalysisItemDesp":"暂无完全掌握的模块，需从蓝灯区寻求突破。"}]
+Output Schema (Strict PascalCase):
+{
 			"Conclusion": "...",
 			"KnowledgeDesc": { "方程与不等式": "..." },
 			"DeepDiagnoseList": [ ... ],
@@ -554,7 +584,7 @@ Rules:
 
 	fmt.Println(">>> Step 3 Request: Sending stats to Gen Model...")
 
-	respStr, err := callLLM(ctx, messages, jsonSchema, "gemini-3-flash", 0.7)
+	respStr, err := callLLM(ctx, messages, jsonSchema, "gemini-3-flash", 0.4)
 	if err != nil {
 		return Step3OutputLocal{}, err
 	}
@@ -564,12 +594,13 @@ Rules:
 
 	var resp Step3OutputLocal
 	if err := json.Unmarshal([]byte(cleanJson), &resp); err != nil {
+		// 如果这里还报错，我们会看到详细的 Raw JSON，方便最后排查
+		fmt.Printf("Step 3 JSON Unmarshal Error: %v\nRaw Content: %s\n", err, cleanJson)
 		return Step3OutputLocal{}, err
 	}
 	return resp, nil
 }
-
-// 组装最终结果
+// ... [assembleFinalResponse, fallbackStep3, repairJSON, callLLM 保持不变] ...
 func assembleFinalResponse(infos []model.AnalysisInfo, stats map[string]*KnowledgeStat, textResp Step3OutputLocal, scoreSpace int64) model.GetDiagnoseListResponse {
 	for i := range infos {
 		title := infos[i].KnowledgeTitle
@@ -638,7 +669,6 @@ func assembleFinalResponse(infos []model.AnalysisInfo, stats map[string]*Knowled
 	}
 }
 
-// 兜底 Step3
 func fallbackStep3(in Step3Input) Step3OutputLocal {
 	defaultProbIDs := []int64{}
 	if len(in.Stats) > 0 && len(in.Stats[0].RefQues) > 0 {
